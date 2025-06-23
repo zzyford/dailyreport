@@ -1,0 +1,8 @@
+schedule==1.2.0
+python-dotenv==1.0.0
+dashscope
+beautifulsoup4==4.12.2
+lxml==4.9.3
+python-dateutil==2.8.2
+loguru==0.7.2
+pydantic==2.5.0 

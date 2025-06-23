@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily Report System
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/path/to/dailyreport
+Environment=PATH=/path/to/dailyreport/venv/bin
+ExecStart=/path/to/dailyreport/venv/bin/python /path/to/dailyreport/main.py --start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target 
