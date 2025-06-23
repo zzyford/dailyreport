@@ -19,6 +19,9 @@ class EmailFormatter:
         # 移除Markdown语法，转换为纯文本
         content = self._convert_markdown_to_text(markdown_content)
         
+        # 添加开头语
+        content = "张总：\n您好！\n\n" + content
+        
         # 美化格式
         formatted_content = self._beautify_text_format(content)
         
