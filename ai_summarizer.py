@@ -34,7 +34,7 @@ class AISummarizer:
 
 请严格按照以下格式生成汇报：
 
-### 1. 产能情况
+# 1. 产能情况
 如果日报中包含季度产能数据，请按以下格式汇报：
 本季度团队整体产能为 X 元（不含税，不含服务器成本）。
 
@@ -44,7 +44,7 @@ class AISummarizer:
 
 如果没有产能数据，则写：本次汇报无产能相关数据。
 
-### 2. 今日工作内容
+# 2. 今日工作内容
 今日主要完成了以下工作：
 
 [按项目或任务逐条列出，格式为：项目名称：具体完成的工作内容。]
@@ -143,13 +143,15 @@ class AISummarizer:
             return self.create_fallback_summary(personal_content, team_reports)
     
     def process_team_reports_individually(self, team_reports: List[Dict]) -> str:
-        """分别处理每个团队成员的日报，然后合并结果"""
+        """两阶段处理：先分别处理每个人的日报，再整体整合"""
         try:
+            logger.info(f"开始两阶段处理 {len(team_reports)} 份团队日报")
+            
+            # 第一阶段：分别处理每个人的日报
             individual_summaries = []
-            logger.info(f"开始分别处理 {len(team_reports)} 份团队日报")
             
             for i, report in enumerate(team_reports, 1):
-                logger.info(f"=== 处理第 {i}/{len(team_reports)} 份团队日报 ===")
+                logger.info(f"=== 第一阶段：处理第 {i}/{len(team_reports)} 份团队日报 ===")
                 logger.info(f"发件人: {report['from']}")
                 logger.info(f"主题: {report['subject']}")
                 logger.info(f"内容长度: {len(report['body'])} 字符")
@@ -171,6 +173,7 @@ class AISummarizer:
                         summary = response.output.text.strip()
                         individual_summaries.append({
                             'from': report['from'],
+                            'username': report['from'].split('@')[0],
                             'subject': report['subject'],
                             'summary': summary
                         })
@@ -181,6 +184,7 @@ class AISummarizer:
                         fallback_summary = f"AI处理失败，原始内容：{report['body'][:300]}..."
                         individual_summaries.append({
                             'from': report['from'],
+                            'username': report['from'].split('@')[0],
                             'subject': report['subject'],
                             'summary': fallback_summary
                         })
@@ -189,19 +193,20 @@ class AISummarizer:
                     fallback_summary = f"原始内容：{report['body'][:300]}..."
                     individual_summaries.append({
                         'from': report['from'],
+                        'username': report['from'].split('@')[0],
                         'subject': report['subject'],
                         'summary': fallback_summary
                     })
             
-            # 合并所有个人汇总
-            logger.info("=== 开始合并所有个人汇总 ===")
-            final_team_summary = self.combine_individual_summaries(individual_summaries)
-            logger.info(f"✅ 团队日报分别处理完成，最终汇总长度: {len(final_team_summary)} 字符")
+            # 第二阶段：整体整合所有个人汇总
+            logger.info("=== 第二阶段：整体整合所有个人汇总 ===")
+            final_team_summary = self.integrate_team_summaries(individual_summaries)
+            logger.info(f"✅ 两阶段处理完成，最终汇总长度: {len(final_team_summary)} 字符")
             
             return final_team_summary
             
         except Exception as e:
-            logger.error(f"❌ 分别处理团队日报失败: {e}")
+            logger.error(f"❌ 两阶段处理失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return self.create_simple_team_summary(team_reports)
@@ -209,86 +214,198 @@ class AISummarizer:
     def create_single_team_report_prompt(self, report: Dict) -> str:
         """为单个团队成员日报创建AI提示词"""
         prompt = f"""
-请对以下单个团队成员的日报进行结构化分析和总结：
+请对以下日报内容进行简洁的结构化总结：
 
-发件人：{report['from']}
-邮件主题：{report['subject']}
-日报内容：
 {report['body']}
 
-请按照以下格式输出分析结果：
-
-**发件人：** {report['from']}
+请严格按照以下格式输出：
 
 **项目进展：**
-（整理该成员负责的项目进展情况）
+- 项目1：简洁描述进展情况
+- 项目2：简洁描述进展情况
+- 项目3：简洁描述进展情况
 
 **遇到问题/风险：**
-（识别该成员提到的问题、困难或风险点）
+- 问题1：简洁描述风险点
+- 问题2：简洁描述风险点
 
 要求：
-- 语言客观、简练，不要有主观解读
-- 完全基于日报内容进行分析
-- 如果某部分内容不存在，写"无相关内容"
-- 保持专业的汇报语调
+- 每个要点控制在25字以内
+- 直接列出项目名称和关键进展，去掉多余描述
+- 如果某部分无内容，写"无"
+- 严禁在输出中包含任何人名、邮箱或标识符号
+- 输出内容不要包含发件人信息
+- 只输出项目进展和风险两个部分
+"""
+        return prompt
+    
+    def integrate_team_summaries(self, individual_summaries: List[Dict]) -> str:
+        """第二阶段：整体整合所有个人汇总"""
+        try:
+            logger.info(f"开始整合 {len(individual_summaries)} 个个人汇总")
+            
+            # 构建整合提示词
+            integration_prompt = self.create_team_integration_prompt(individual_summaries)
+            logger.info(f"整合提示词长度: {len(integration_prompt)} 字符")
+            
+            if self.config.app_id:
+                logger.info("调用AI进行团队汇总整合...")
+                response = Application.call(
+                    api_key=self.config.api_key,
+                    app_id=self.config.app_id,
+                    prompt=integration_prompt,
+                    temperature=0.1
+                )
+                
+                if response.status_code == HTTPStatus.OK:
+                    integrated_summary = response.output.text.strip()
+                    logger.info(f"✅ 团队汇总整合完成，长度: {len(integrated_summary)} 字符")
+                    return integrated_summary
+                else:
+                    logger.error(f"❌ 团队汇总整合AI调用失败: {response.status_code}")
+                    # 降级到原来的合并方法
+                    return self.combine_individual_summaries(individual_summaries)
+            else:
+                logger.warning("⚠️ 未配置AI，使用简单合并方法")
+                return self.combine_individual_summaries(individual_summaries)
+                
+        except Exception as e:
+            logger.error(f"❌ 团队汇总整合失败: {e}")
+            # 降级到原来的合并方法
+            return self.combine_individual_summaries(individual_summaries)
+    
+    def create_team_integration_prompt(self, individual_summaries: List[Dict]) -> str:
+        """创建团队整合的AI提示词"""
+        # 构建所有个人汇总的文本
+        summaries_text = ""
+        for i, summary in enumerate(individual_summaries, 1):
+            summaries_text += f"\n=== {summary['username']} 的工作汇总 ===\n"
+            summaries_text += summary['summary'] + "\n"
+        
+        prompt = f"""
+请对以下团队成员的工作汇总进行整体整合，生成一份专业的团队工作总结：
+
+{summaries_text}
+
+请按照以下格式输出整合后的团队工作总结：
+
+# 团队工作总结
+
+# 1. 项目进展
+（整合所有成员的项目进展，避免重复，突出关键进展）
+
+# 2. 项目风险
+（整合所有成员提到的风险和问题，去除重复内容）
+
+整合要求：
+- 按项目或业务线重新组织内容，而不是简单按人员分组
+- 合并相关的项目进展，避免内容重复
+- 识别跨人员的协作项目，统一描述进展
+- 语言简洁专业，每个要点控制在30字以内
+- 使用统一的格式：- 项目名：具体进展描述
+- 如果某个分类下没有内容，写"无"
 """
         return prompt
     
     def combine_individual_summaries(self, individual_summaries: List[Dict]) -> str:
-        """合并所有个人汇总为团队汇总"""
+        """合并所有个人汇总为团队汇总（清晰格式版）"""
         logger.info(f"开始合并 {len(individual_summaries)} 个个人汇总")
         team_summary = "## 团队工作总结\n\n"
         
-        # 2. 项目进展汇总
+        # 1. 项目进展汇总
         logger.info("提取项目进展信息...")
-        team_summary += "### 2. 项目进展\n"
-        project_items = []
+        team_summary += "### 1. 项目进展\n\n"
+        
         for summary in individual_summaries:
+            username = summary['from'].split('@')[0]
             content = summary['summary']
+            
             if '**项目进展：**' in content:
                 start = content.find('**项目进展：**') + len('**项目进展：**')
                 end = content.find('**遇到问题/风险：**')
                 if end == -1:
-                    end = content.find('**明日计划：**')
-                if end == -1:
                     end = len(content)
                 progress = content[start:end].strip()
-                if progress and progress != "无相关内容":
-                    project_items.append(f"• {summary['from'].split('@')[0]}: {progress}")
-                    logger.info(f"提取到 {summary['from'].split('@')[0]} 的项目进展")
+                
+                if progress and progress not in ["无", "无相关内容"]:
+                    # 清理格式，去掉多余的符号和空行，以及可能的邮箱格式
+                    progress_lines = []
+                    for line in progress.split('\n'):
+                        line = line.strip()
+                        if line and not self._contains_email_format(line):
+                            progress_lines.append(line)
+                    
+                    if progress_lines:
+                        team_summary += f"**{username}：**\n"
+                        for line in progress_lines:
+                            # 清理可能的邮箱格式残留
+                            clean_line = self._clean_email_format(line)
+                            # 确保每行都有合适的格式
+                            if clean_line.startswith('-'):
+                                team_summary += f"{clean_line}\n"
+                            else:
+                                team_summary += f"- {clean_line}\n"
+                        team_summary += "\n"
+                        logger.info(f"提取到 {username} 的项目进展")
         
-        if project_items:
-            team_summary += "\n".join(project_items) + "\n\n"
-            logger.info(f"项目进展汇总完成，共 {len(project_items)} 条")
-        else:
-            team_summary += "无相关内容\n\n"
-            logger.info("未找到项目进展信息")
-        
-        # 3. 项目风险汇总
+        # 2. 项目风险汇总
         logger.info("提取项目风险信息...")
-        team_summary += "### 3. 项目风险\n"
-        risk_items = []
+        team_summary += "### 2. 项目风险\n\n"
+        
+        has_risks = False
         for summary in individual_summaries:
+            username = summary['from'].split('@')[0]
             content = summary['summary']
+            
             if '**遇到问题/风险：**' in content:
                 start = content.find('**遇到问题/风险：**') + len('**遇到问题/风险：**')
-                end = content.find('**明日计划：**')
-                if end == -1:
-                    end = len(content)
-                risks = content[start:end].strip()
-                if risks and risks != "无相关内容":
-                    risk_items.append(f"• {summary['from'].split('@')[0]}: {risks}")
-                    logger.info(f"提取到 {summary['from'].split('@')[0]} 的风险信息")
+                risks = content[start:].strip()
+                
+                if risks and risks not in ["无", "无相关内容"]:
+                    # 清理格式，去掉多余的符号和空行，以及可能的邮箱格式
+                    risk_lines = []
+                    for line in risks.split('\n'):
+                        line = line.strip()
+                        if line and not self._contains_email_format(line):
+                            risk_lines.append(line)
+                    
+                    if risk_lines:
+                        team_summary += f"**{username}：**\n"
+                        for line in risk_lines:
+                            # 清理可能的邮箱格式残留
+                            clean_line = self._clean_email_format(line)
+                            # 确保每行都有合适的格式
+                            if clean_line.startswith('-'):
+                                team_summary += f"{clean_line}\n"
+                            else:
+                                team_summary += f"- {clean_line}\n"
+                        team_summary += "\n"
+                        has_risks = True
+                        logger.info(f"提取到 {username} 的风险信息")
         
-        if risk_items:
-            team_summary += "\n".join(risk_items) + "\n\n"
-            logger.info(f"项目风险汇总完成，共 {len(risk_items)} 条")
-        else:
-            team_summary += "无相关内容\n\n"
+        if not has_risks:
+            team_summary += "暂无明显风险\n\n"
             logger.info("未找到项目风险信息")
         
         logger.info("团队汇总合并完成")
         return team_summary
+    
+    def _contains_email_format(self, text: str) -> bool:
+        """检查文本是否包含邮箱格式"""
+        # 检查是否包含类似 "姓名 <邮箱:" 的格式
+        import re
+        email_pattern = r'[^<]*<[^@]*@[^>]*:'
+        return bool(re.search(email_pattern, text))
+    
+    def _clean_email_format(self, text: str) -> str:
+        """清理文本中的邮箱格式"""
+        import re
+        # 移除类似 "姓名 <邮箱:" 的格式
+        text = re.sub(r'[^<]*<[^@]*@[^>]*:\s*', '', text)
+        # 移除可能的其他邮箱格式残留
+        text = re.sub(r'<[^@]*@[^>]*>', '', text)
+        text = re.sub(r'<[^>]*:', '', text)
+        return text.strip()
     
     def summarize_reports(self, reports: List[Dict]) -> str:
         """汇总日报 - 保持向后兼容"""
