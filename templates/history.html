@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}历史记录 - 日报系统{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">
+            <i class="fas fa-history me-2"></i>历史日报记录
+        </h5>
+    </div>
+    <div class="card-body">
+        {% if reports %}
+            <div class="row">
+                {% for report in reports %}
+                <div class="col-md-6 mb-4">
+                    <div class="card h-100">
+                        <div class="card-header bg-light">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <h6 class="mb-0">{{ report.date }}</h6>
+                                <small class="text-muted">{{ report.created_at }}</small>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="markdown-content" style="max-height: 300px; overflow-y: auto;">
+                                {{ report.final_report | truncate(500) }}
+                            </div>
+                        </div>
+                        <div class="card-footer">
+                            <button class="btn btn-sm btn-outline-primary" 
+                                    onclick="viewReport('{{ report.date }}', `{{ report.final_report | replace('`', '\\`') | safe }}`)">
+                                <i class="fas fa-eye me-1"></i>查看完整内容
+                            </button>
+                            <button class="btn btn-sm btn-outline-success" 
+                                    onclick="copyReport(`{{ report.final_report | replace('`', '\\`') | safe }}`)">
+                                <i class="fas fa-copy me-1"></i>复制
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-center py-5">
+                <i class="fas fa-file-alt fa-3x text-muted mb-3"></i>
+                <h5 class="text-muted">暂无历史记录</h5>
+                <p class="text-muted">开始创建你的第一份日报吧！</p>
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    <i class="fas fa-plus me-1"></i>创建日报
+                </a>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- 查看详情模态框 -->
+<div class="modal fade" id="detail-modal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-file-alt me-2"></i><span id="modal-date"></span> 的日报
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="modal-content" class="markdown-content"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" onclick="copyModalContent()">
+                    <i class="fas fa-copy me-1"></i>复制到剪贴板
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
+
+<script>
+// 查看完整报告
+function viewReport(date, content) {
+    document.getElementById('modal-date').textContent = date;
+    document.getElementById('modal-content').innerHTML = marked.parse(content);
+    
+    var modal = new bootstrap.Modal(document.getElementById('detail-modal'));
+    modal.show();
+}
+
+// 复制报告内容
+function copyReport(content) {
+    navigator.clipboard.writeText(content).then(function() {
+        showToast('内容已复制到剪贴板', 'success');
+    });
+}
+
+// 复制模态框内容
+function copyModalContent() {
+    var content = document.getElementById('modal-content').innerText;
+    navigator.clipboard.writeText(content).then(function() {
+        showToast('内容已复制到剪贴板', 'success');
+    });
+}
+
+// 显示通知
+function showToast(message, type = 'info') {
+    var toastBody = document.getElementById('toast-body');
+    var toast = document.getElementById('toast');
+    
+    // 设置样式
+    toast.className = 'toast';
+    if (type === 'success') {
+        toast.classList.add('bg-success', 'text-white');
+    } else if (type === 'error') {
+        toast.classList.add('bg-danger', 'text-white');
+    }
+    
+    toastBody.textContent = message;
+    var bsToast = new bootstrap.Toast(toast);
+    bsToast.show();
+}
+</script>
+{% endblock %} 

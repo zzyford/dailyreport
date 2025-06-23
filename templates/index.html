@@ -1,0 +1,398 @@
+{% extends "base.html" %}
+
+{% block title %}编辑日报 - 日报系统{% endblock %}
+
+{% block head %}
+<!-- Quill富文本编辑器 -->
+<link href="{{ url_for('static', filename='css/quill.snow.css') }}" rel="stylesheet">
+<!-- Markdown支持 -->
+<script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- 左侧编辑区域 -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-edit me-2"></i>工作内容编辑
+                </h5>
+                <div>
+                    <input type="date" id="report-date" class="form-control d-inline-block" style="width: auto;" value="{{ current_date }}">
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- 工具栏提示 -->
+                <div class="alert alert-info alert-dismissible fade show" role="alert">
+                    <i class="fas fa-info-circle me-2"></i>
+                    <strong>使用说明：</strong>支持Markdown格式，可以使用 **粗体**、*斜体*、`代码`、列表等格式。
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                
+                <!-- 富文本编辑器 -->
+                <div id="editor" style="height: 400px;">{{ current_content | safe }}</div>
+                
+                <!-- 操作按钮 -->
+                <div class="mt-3">
+                    <button id="save-btn" class="btn btn-success me-2">
+                        <i class="fas fa-save me-1"></i>保存内容
+                    </button>
+                    <button id="generate-btn" class="btn btn-primary me-2">
+                        <i class="fas fa-magic me-1"></i>生成日报
+                    </button>
+                    <button id="preview-btn" class="btn btn-outline-secondary">
+                        <i class="fas fa-eye me-1"></i>预览
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 右侧信息面板 -->
+    <div class="col-lg-4">
+        <!-- 快速操作 -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="fas fa-rocket me-2"></i>快速操作</h6>
+            </div>
+            <div class="card-body">
+                <button class="btn btn-outline-primary btn-sm mb-2 w-100" onclick="insertTemplate('work')">
+                    <i class="fas fa-briefcase me-1"></i>插入工作模板
+                </button>
+                <button class="btn btn-outline-primary btn-sm mb-2 w-100" onclick="insertTemplate('meeting')">
+                    <i class="fas fa-users me-1"></i>插入会议模板
+                </button>
+                <button class="btn btn-outline-primary btn-sm w-100" onclick="insertTemplate('project')">
+                    <i class="fas fa-project-diagram me-1"></i>插入项目模板
+                </button>
+            </div>
+        </div>
+        
+        <!-- 统计信息 -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="fas fa-chart-bar me-2"></i>统计信息</h6>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-6">
+                        <div class="h4 text-primary mb-0" id="word-count">0</div>
+                        <small class="text-muted">字数</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="h4 text-success mb-0" id="line-count">0</div>
+                        <small class="text-muted">行数</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 最近历史 -->
+        <div class="card">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="fas fa-history me-2"></i>最近记录</h6>
+            </div>
+            <div class="card-body" id="recent-history">
+                <div class="text-center text-muted">
+                    <i class="fas fa-spinner fa-spin me-2"></i>加载中...
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 生成结果模态框 -->
+<div class="modal fade" id="result-modal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-file-alt me-2"></i>生成的日报
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="generated-report" class="markdown-content"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" onclick="copyToClipboard()">
+                    <i class="fas fa-copy me-1"></i>复制到剪贴板
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 预览模态框 -->
+<div class="modal fade" id="preview-modal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-eye me-2"></i>内容预览
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="preview-content" class="markdown-content"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<!-- Quill编辑器 -->
+<script src="{{ url_for('static', filename='js/quill.min.js') }}"></script>
+
+<script>
+// 初始化Quill编辑器
+var quill = new Quill('#editor', {
+    theme: 'snow',
+    modules: {
+        toolbar: [
+            ['bold', 'italic', 'underline', 'strike'],
+            ['blockquote', 'code-block'],
+            [{ 'header': 1 }, { 'header': 2 }],
+            [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+            [{ 'script': 'sub'}, { 'script': 'super' }],
+            [{ 'indent': '-1'}, { 'indent': '+1' }],
+            ['link'],
+            ['clean']
+        ]
+    }
+});
+
+// 设置初始内容
+{% if current_content %}
+quill.root.innerHTML = marked.parse(`{{ current_content | replace('\n', '\\n') | replace('\r', '') | safe }}`);
+{% endif %}
+
+// 实时统计字数和行数
+quill.on('text-change', function() {
+    updateStats();
+});
+
+function updateStats() {
+    var text = quill.getText();
+    var wordCount = text.trim().length;
+    var lineCount = text.split('\n').length - 1;
+    
+    document.getElementById('word-count').textContent = wordCount;
+    document.getElementById('line-count').textContent = lineCount;
+}
+
+// 保存内容
+document.getElementById('save-btn').addEventListener('click', function() {
+    var content = quill.getText();
+    var date = document.getElementById('report-date').value;
+    
+    if (!content.trim()) {
+        showToast('请输入内容后再保存', 'warning');
+        return;
+    }
+    
+    fetch('/save_content', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            content: content,
+            date: date
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast('内容保存成功', 'success');
+        } else {
+            showToast('保存失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        showToast('保存失败: ' + error.message, 'error');
+    });
+});
+
+// 生成日报
+document.getElementById('generate-btn').addEventListener('click', function() {
+    var content = quill.getText();
+    var date = document.getElementById('report-date').value;
+    
+    if (!content.trim()) {
+        showToast('请先输入工作内容', 'warning');
+        return;
+    }
+    
+    // 显示加载状态
+    var btn = this;
+    var originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>生成中...';
+    btn.disabled = true;
+    
+    fetch('/generate_report', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            date: date
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        
+        if (data.success) {
+            document.getElementById('generated-report').innerHTML = marked.parse(data.report);
+            var modal = new bootstrap.Modal(document.getElementById('result-modal'));
+            modal.show();
+            showToast(`日报生成成功！合并了${data.email_count}份邮件日报`, 'success');
+            loadRecentHistory(); // 刷新历史记录
+        } else {
+            showToast('生成失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        showToast('生成失败: ' + error.message, 'error');
+    });
+});
+
+// 预览内容
+document.getElementById('preview-btn').addEventListener('click', function() {
+    var content = quill.getText();
+    if (!content.trim()) {
+        showToast('没有内容可预览', 'warning');
+        return;
+    }
+    
+    document.getElementById('preview-content').innerHTML = marked.parse(content);
+    var modal = new bootstrap.Modal(document.getElementById('preview-modal'));
+    modal.show();
+});
+
+// 插入模板
+function insertTemplate(type) {
+    var templates = {
+        'work': `## 今日工作
+### 已完成
+- [ ] 任务1：描述
+- [ ] 任务2：描述
+
+### 进行中
+- [ ] 项目A：当前进度
+- [ ] 项目B：遇到的问题
+
+### 计划明日
+- [ ] 任务3：计划
+- [ ] 任务4：计划`,
+        
+        'meeting': `## 会议记录
+**会议时间：** ${new Date().toLocaleDateString()}
+**参会人员：** 
+**会议主题：** 
+
+### 讨论要点
+1. 
+2. 
+3. 
+
+### 决策事项
+- 
+- 
+
+### 后续行动
+- [ ] 责任人：行动项`,
+        
+        'project': `## 项目进展
+**项目名称：** 
+**项目阶段：** 
+
+### 本周完成
+- 
+- 
+
+### 下周计划
+- 
+- 
+
+### 风险与问题
+- 
+- `
+    };
+    
+    var delta = quill.clipboard.convert(templates[type]);
+    quill.setContents(delta, 'user');
+}
+
+// 复制到剪贴板
+function copyToClipboard() {
+    var reportContent = document.getElementById('generated-report').innerText;
+    navigator.clipboard.writeText(reportContent).then(function() {
+        showToast('内容已复制到剪贴板', 'success');
+    });
+}
+
+// 显示通知
+function showToast(message, type = 'info') {
+    var toastBody = document.getElementById('toast-body');
+    var toast = document.getElementById('toast');
+    
+    // 设置样式
+    toast.className = 'toast';
+    if (type === 'success') {
+        toast.classList.add('bg-success', 'text-white');
+    } else if (type === 'error') {
+        toast.classList.add('bg-danger', 'text-white');
+    } else if (type === 'warning') {
+        toast.classList.add('bg-warning');
+    }
+    
+    toastBody.textContent = message;
+    var bsToast = new bootstrap.Toast(toast);
+    bsToast.show();
+}
+
+// 加载最近历史
+function loadRecentHistory() {
+    fetch('/api/history')
+    .then(response => response.json())
+    .then(data => {
+        var historyContainer = document.getElementById('recent-history');
+        if (data.length === 0) {
+            historyContainer.innerHTML = '<div class="text-muted text-center">暂无历史记录</div>';
+            return;
+        }
+        
+        var html = '';
+        data.slice(0, 5).forEach(function(item) {
+            html += `
+                <div class="border-bottom pb-2 mb-2">
+                    <div class="small text-muted">${item.date}</div>
+                    <div class="small">${item.content.substring(0, 50)}...</div>
+                </div>
+            `;
+        });
+        historyContainer.innerHTML = html;
+    })
+    .catch(error => {
+        document.getElementById('recent-history').innerHTML = '<div class="text-danger">加载失败</div>';
+    });
+}
+
+// 页面加载完成后
+document.addEventListener('DOMContentLoaded', function() {
+    updateStats();
+    loadRecentHistory();
+});
+</script>
+{% endblock %} 
