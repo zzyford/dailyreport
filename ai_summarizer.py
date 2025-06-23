@@ -92,7 +92,7 @@ class AISummarizer:
         return prompt
     
     def summarize_reports_separated(self, personal_content: str, team_reports: List[Dict]) -> str:
-        """分别处理个人日报和团队日报"""
+        """分别处理个人日报和团队日报（每个人分别处理避免上下文过长）"""
         try:
             logger.info(f"=== AI分离汇总处理开始 ===")
             logger.info(f"个人内容长度: {len(personal_content)} 字符")
@@ -124,29 +124,10 @@ class AISummarizer:
                 else:
                     personal_summary = self.create_simple_personal_summary(personal_content)
             
-            # 处理团队日报
+            # 处理团队日报 - 分别处理每个人的日报
             if team_reports:
-                logger.info("=== 开始处理团队日报 ===")
-                team_reports_text = self.format_reports_for_ai(team_reports)
-                team_prompt = self.create_team_summary_prompt(team_reports_text)
-                logger.info(f"团队日报提示词长度: {len(team_prompt)} 字符")
-                
-                if self.config.app_id:
-                    response = Application.call(
-                        api_key=self.config.api_key,
-                        app_id=self.config.app_id,
-                        prompt=team_prompt,
-                        temperature=0.1
-                    )
-                    
-                    if response.status_code == HTTPStatus.OK:
-                        team_summary = response.output.text.strip()
-                        logger.info("团队日报AI汇总完成")
-                    else:
-                        logger.error(f"团队日报AI调用失败: {response.status_code}")
-                        team_summary = self.create_simple_team_summary(team_reports)
-                else:
-                    team_summary = self.create_simple_team_summary(team_reports)
+                logger.info("=== 开始分别处理团队日报 ===")
+                team_summary = self.process_team_reports_individually(team_reports)
             
             # 合并最终报告
             final_report = self.combine_summaries(personal_summary, team_summary)
@@ -160,6 +141,154 @@ class AISummarizer:
             logger.error(f"AI分离汇总失败: {e}")
             # 返回简单的汇总作为备选
             return self.create_fallback_summary(personal_content, team_reports)
+    
+    def process_team_reports_individually(self, team_reports: List[Dict]) -> str:
+        """分别处理每个团队成员的日报，然后合并结果"""
+        try:
+            individual_summaries = []
+            logger.info(f"开始分别处理 {len(team_reports)} 份团队日报")
+            
+            for i, report in enumerate(team_reports, 1):
+                logger.info(f"=== 处理第 {i}/{len(team_reports)} 份团队日报 ===")
+                logger.info(f"发件人: {report['from']}")
+                logger.info(f"主题: {report['subject']}")
+                logger.info(f"内容长度: {len(report['body'])} 字符")
+                
+                # 为单个日报创建AI提示词
+                single_report_prompt = self.create_single_team_report_prompt(report)
+                logger.info(f"单个日报提示词长度: {len(single_report_prompt)} 字符")
+                
+                if self.config.app_id:
+                    logger.info(f"调用AI处理第 {i} 份日报...")
+                    response = Application.call(
+                        api_key=self.config.api_key,
+                        app_id=self.config.app_id,
+                        prompt=single_report_prompt,
+                        temperature=0.1
+                    )
+                    
+                    if response.status_code == HTTPStatus.OK:
+                        summary = response.output.text.strip()
+                        individual_summaries.append({
+                            'from': report['from'],
+                            'subject': report['subject'],
+                            'summary': summary
+                        })
+                        logger.info(f"✅ 第 {i} 份日报AI汇总完成，汇总长度: {len(summary)} 字符")
+                        logger.info(f"汇总预览: {summary[:200]}...")
+                    else:
+                        logger.error(f"❌ 第 {i} 份日报AI调用失败: {response.status_code}")
+                        fallback_summary = f"AI处理失败，原始内容：{report['body'][:300]}..."
+                        individual_summaries.append({
+                            'from': report['from'],
+                            'subject': report['subject'],
+                            'summary': fallback_summary
+                        })
+                else:
+                    logger.warning(f"⚠️ 未配置AI，使用原始内容作为第 {i} 份日报的汇总")
+                    fallback_summary = f"原始内容：{report['body'][:300]}..."
+                    individual_summaries.append({
+                        'from': report['from'],
+                        'subject': report['subject'],
+                        'summary': fallback_summary
+                    })
+            
+            # 合并所有个人汇总
+            logger.info("=== 开始合并所有个人汇总 ===")
+            final_team_summary = self.combine_individual_summaries(individual_summaries)
+            logger.info(f"✅ 团队日报分别处理完成，最终汇总长度: {len(final_team_summary)} 字符")
+            
+            return final_team_summary
+            
+        except Exception as e:
+            logger.error(f"❌ 分别处理团队日报失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return self.create_simple_team_summary(team_reports)
+    
+    def create_single_team_report_prompt(self, report: Dict) -> str:
+        """为单个团队成员日报创建AI提示词"""
+        prompt = f"""
+请对以下单个团队成员的日报进行结构化分析和总结：
+
+发件人：{report['from']}
+邮件主题：{report['subject']}
+日报内容：
+{report['body']}
+
+请按照以下格式输出分析结果：
+
+**发件人：** {report['from']}
+
+**项目进展：**
+（整理该成员负责的项目进展情况）
+
+**遇到问题/风险：**
+（识别该成员提到的问题、困难或风险点）
+
+要求：
+- 语言客观、简练，不要有主观解读
+- 完全基于日报内容进行分析
+- 如果某部分内容不存在，写"无相关内容"
+- 保持专业的汇报语调
+"""
+        return prompt
+    
+    def combine_individual_summaries(self, individual_summaries: List[Dict]) -> str:
+        """合并所有个人汇总为团队汇总"""
+        logger.info(f"开始合并 {len(individual_summaries)} 个个人汇总")
+        team_summary = "## 团队工作总结\n\n"
+        
+        # 2. 项目进展汇总
+        logger.info("提取项目进展信息...")
+        team_summary += "### 2. 项目进展\n"
+        project_items = []
+        for summary in individual_summaries:
+            content = summary['summary']
+            if '**项目进展：**' in content:
+                start = content.find('**项目进展：**') + len('**项目进展：**')
+                end = content.find('**遇到问题/风险：**')
+                if end == -1:
+                    end = content.find('**明日计划：**')
+                if end == -1:
+                    end = len(content)
+                progress = content[start:end].strip()
+                if progress and progress != "无相关内容":
+                    project_items.append(f"• {summary['from'].split('@')[0]}: {progress}")
+                    logger.info(f"提取到 {summary['from'].split('@')[0]} 的项目进展")
+        
+        if project_items:
+            team_summary += "\n".join(project_items) + "\n\n"
+            logger.info(f"项目进展汇总完成，共 {len(project_items)} 条")
+        else:
+            team_summary += "无相关内容\n\n"
+            logger.info("未找到项目进展信息")
+        
+        # 3. 项目风险汇总
+        logger.info("提取项目风险信息...")
+        team_summary += "### 3. 项目风险\n"
+        risk_items = []
+        for summary in individual_summaries:
+            content = summary['summary']
+            if '**遇到问题/风险：**' in content:
+                start = content.find('**遇到问题/风险：**') + len('**遇到问题/风险：**')
+                end = content.find('**明日计划：**')
+                if end == -1:
+                    end = len(content)
+                risks = content[start:end].strip()
+                if risks and risks != "无相关内容":
+                    risk_items.append(f"• {summary['from'].split('@')[0]}: {risks}")
+                    logger.info(f"提取到 {summary['from'].split('@')[0]} 的风险信息")
+        
+        if risk_items:
+            team_summary += "\n".join(risk_items) + "\n\n"
+            logger.info(f"项目风险汇总完成，共 {len(risk_items)} 条")
+        else:
+            team_summary += "无相关内容\n\n"
+            logger.info("未找到项目风险信息")
+        
+        logger.info("团队汇总合并完成")
+        return team_summary
     
     def summarize_reports(self, reports: List[Dict]) -> str:
         """汇总日报 - 保持向后兼容"""
