@@ -34,8 +34,6 @@ class AISummarizer:
 
 请严格按照以下格式生成汇报：
 
-## 个人工作总结
-
 ### 1. 产能情况
 如果日报中包含季度产能数据，请按以下格式汇报：
 本季度团队整体产能为 X 元（不含税，不含服务器成本）。
@@ -71,17 +69,16 @@ class AISummarizer:
 
 请严格按照以下格式生成汇报：
 
-## 团队工作总结
 
-### 1. 项目进展
+### 3. 团队项目进展
 各项目进展情况如下：
 
 [按项目名称分类，格式为：项目名称：具体进展情况。]
 
-### 2. 项目风险
+### 4. 团队项目风险
 需要关注的问题和风险：
 
-[如有风险或问题，按项目列出具体情况；如无明显风险则写：各项目进展正常，暂无需要特别关注的风险。]
+[如有风险或问题，按项目列出具体情况；如无明显风险则写：无需要特别关注的风险。]
 
 要求：
 - 你是团队管理者，向老板汇报团队工作
@@ -174,7 +171,7 @@ class AISummarizer:
     
     def combine_summaries(self, personal_summary: str, team_summary: str) -> str:
         """合并个人和团队汇总"""
-        final_report = "# 日报汇总\n\n"
+        final_report = ""
         
         if personal_summary:
             final_report += personal_summary + "\n\n"

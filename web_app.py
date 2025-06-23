@@ -16,6 +16,7 @@ import schedule
 import random
 from email_handler import EmailHandler
 from ai_summarizer import AISummarizer
+from email_formatter import EmailFormatter
 from config import Config
 
 # 配置日志
@@ -163,10 +164,14 @@ class BackgroundScheduler:
                 # 如果配置了收件人，可以自动发送邮件
                 if config.report.report_recipients:
                     try:
+                        # 使用邮件格式化器美化内容
+                        email_formatter = EmailFormatter()
+                        formatted_content = email_formatter.format_for_email(final_report)
+                        
                         email_handler.send_email(
                             to_emails=config.report.report_recipients,
-                            subject=f"团队日报汇总 - {task_date}",
-                            content=final_report,
+                            subject=f"📊 团队日报汇总 - {task_date}",
+                            content=formatted_content,
                             content_type="plain"
                         )
                         logger.info("定时日报邮件发送成功")
