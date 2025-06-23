@@ -517,7 +517,7 @@ def show_startup_info():
     print("=" * 60)
     
     print(f"📅 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🌐 Web地址: http://localhost:5000")
+    print(f"🌐 Web地址: http://localhost:5002")
     print(f"📧 邮箱配置: {config.email.username}")
     print(f"🤖 AI配置: 阿里云百炼 (App ID: {config.ai.app_id[:8]}...)")
     
@@ -600,7 +600,7 @@ if __name__ == '__main__':
         logger.info("Web应用启动，定时任务已自动启动")
         
         # 启动应用
-        app.run(host='0.0.0.0', port=5000, debug=False)
+        app.run(host='0.0.0.0', port=5002, debug=False)
         
     except KeyboardInterrupt:
         print("\n\n🛑 收到停止信号")
