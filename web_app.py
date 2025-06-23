@@ -139,13 +139,18 @@ def generate_report():
         
         # 获取邮件内容
         logger.info("开始获取邮件内容...")
-        email_handler = EmailHandler()
-        email_reports = email_handler.collect_daily_reports(target_date=report_date)
+        config = Config()
+        email_handler = EmailHandler(config.email)
+        email_reports = email_handler.collect_reports(
+            from_emails=config.report.report_from_emails,
+            subject_keywords=config.report.report_subject_keywords,
+            days=1
+        )
         
         email_content = ""
         if email_reports:
             email_content = "\n\n".join([
-                f"【{report['sender']}的日报】\n{report['content']}"
+                f"【{report['from']}的日报】\n主题: {report['subject']}\n内容: {report['body']}"
                 for report in email_reports
             ])
             logger.info(f"获取到 {len(email_reports)} 份邮件日报")
@@ -163,10 +168,11 @@ def generate_report():
         
         # AI汇总
         logger.info("开始AI汇总...")
-        ai_summarizer = AISummarizer()
+        ai_summarizer = AISummarizer(config.ai)
         final_report = ai_summarizer.summarize_reports([{
-            'sender': '综合日报',
-            'content': combined_content,
+            'from': '综合日报',
+            'subject': '综合日报汇总',
+            'body': combined_content,
             'date': report_date
         }])
         
