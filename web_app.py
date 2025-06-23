@@ -201,7 +201,7 @@ class BackgroundScheduler:
                         
                         email_handler.send_email(
                             to_emails=config.report.report_recipients,
-                            subject=f"📊 团队日报汇总 - {task_date}",
+                            subject=f"团队日报汇总 - {task_date}",
                             content=formatted_content,
                             content_type="plain"
                         )
@@ -544,6 +544,54 @@ def api_history():
         'content': report['final_report'],
         'created_at': report['created_at']
     } for report in reports])
+
+@app.route('/send_history_email', methods=['POST'])
+def send_history_email():
+    """发送历史日报邮件"""
+    try:
+        data = request.get_json()
+        report_date = data.get('date')
+        report_content = data.get('content')
+        password = data.get('password')
+        
+        # 验证密码
+        if password != '12345678':
+            return jsonify({'success': False, 'message': '密码错误'})
+        
+        if not report_date or not report_content:
+            return jsonify({'success': False, 'message': '缺少必要参数'})
+        
+        # 检查是否配置了收件人
+        if not config.report.report_recipients:
+            return jsonify({'success': False, 'message': '未配置邮件收件人'})
+        
+        # 将HTML内容转换为纯文本
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(report_content, 'html.parser')
+        text_content = soup.get_text()
+        
+        # 使用邮件格式化器美化内容
+        email_formatter = EmailFormatter()
+        formatted_content = email_formatter.format_for_email(text_content)
+        
+        # 发送邮件
+        email_handler = EmailHandler(config.email)
+        success = email_handler.send_email(
+            to_emails=config.report.report_recipients,
+            subject=f"Apple 日报汇总 - {report_date} ",
+            content=formatted_content,
+            content_type="plain"
+        )
+        
+        if success:
+            logger.info(f"历史日报邮件发送成功: {report_date}")
+            return jsonify({'success': True, 'message': '邮件发送成功'})
+        else:
+            return jsonify({'success': False, 'message': '邮件发送失败'})
+            
+    except Exception as e:
+        logger.error(f"发送历史日报邮件失败: {e}")
+        return jsonify({'success': False, 'message': f'发送失败: {str(e)}'})
 
 def show_startup_info():
     """显示启动信息"""

@@ -71,6 +71,36 @@
                 <button type="button" class="btn btn-primary" onclick="copyModalContent()">
                     <i class="fas fa-copy me-1"></i>复制到剪贴板
                 </button>
+                <button type="button" class="btn btn-success" onclick="sendReportEmail()">
+                    <i class="fas fa-envelope me-1"></i>发送邮件
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 密码验证模态框 -->
+<div class="modal fade" id="password-modal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="fas fa-lock me-2"></i>身份验证
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="email-password" class="form-label">请输入发送密码：</label>
+                    <input type="password" class="form-control" id="email-password" placeholder="请输入密码" onkeypress="handlePasswordKeyPress(event)">
+                    <div class="form-text">输入正确密码后可发送邮件</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="confirmSendEmail()">
+                    <i class="fas fa-check me-1"></i>确认发送
+                </button>
             </div>
         </div>
     </div>
@@ -102,6 +132,75 @@ function copyModalContent() {
     var content = document.getElementById('modal-content').innerText;
     navigator.clipboard.writeText(content).then(function() {
         showToast('内容已复制到剪贴板', 'success');
+    });
+}
+
+// 发送邮件 - 显示密码验证
+function sendReportEmail() {
+    // 清空密码输入框
+    document.getElementById('email-password').value = '';
+    
+    // 显示密码验证模态框
+    var passwordModal = new bootstrap.Modal(document.getElementById('password-modal'));
+    passwordModal.show();
+    
+    // 自动聚焦到密码输入框
+    setTimeout(function() {
+        document.getElementById('email-password').focus();
+    }, 500);
+}
+
+// 处理密码输入框的回车键
+function handlePasswordKeyPress(event) {
+    if (event.key === 'Enter') {
+        confirmSendEmail();
+    }
+}
+
+// 确认发送邮件
+function confirmSendEmail() {
+    var password = document.getElementById('email-password').value;
+  
+    // 密码正确，获取当前报告内容
+    var reportDate = document.getElementById('modal-date').textContent;
+    var reportContent = document.getElementById('modal-content').innerHTML;
+    
+    // 关闭密码模态框
+    var passwordModal = bootstrap.Modal.getInstance(document.getElementById('password-modal'));
+    passwordModal.hide();
+    
+    // 发送邮件
+    var sendBtn = document.querySelector('#password-modal .btn-primary');
+    var originalText = sendBtn.innerHTML;
+    sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>发送中...';
+    sendBtn.disabled = true;
+    
+    fetch('/send_history_email', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            date: reportDate,
+            content: reportContent,
+            password: password
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        sendBtn.innerHTML = originalText;
+        sendBtn.disabled = false;
+        
+        if (data.success) {
+            showToast('邮件发送成功！', 'success');
+        } else {
+            showToast('邮件发送失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        sendBtn.innerHTML = originalText;
+        sendBtn.disabled = false;
+        showToast('邮件发送失败: ' + error.message, 'error');
     });
 }
 
