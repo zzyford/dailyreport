@@ -89,6 +89,49 @@
             </div>
         </div>
         
+        <!-- 定时任务状态 -->
+        <div class="card mb-3">
+            <div class="card-header">
+                <h6 class="mb-0"><i class="fas fa-clock me-2"></i>智能定时任务</h6>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info alert-sm p-2 mb-3">
+                    <small><i class="fas fa-info-circle me-1"></i>每天21:00-22:00随机时间自动发送日报</small>
+                </div>
+                
+                <div class="row text-center mb-3">
+                    <div class="col-6">
+                        <div class="h6 mb-0" id="scheduler-status">
+                            <span class="badge bg-secondary">检查中...</span>
+                        </div>
+                        <small class="text-muted">状态</small>
+                    </div>
+                    <div class="col-6">
+                        <div class="small text-muted" id="next-run">-</div>
+                        <small class="text-muted">下次发送</small>
+                    </div>
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-outline-success btn-sm" id="start-scheduler-btn" onclick="toggleScheduler('start')">
+                        <i class="fas fa-play me-1"></i>启动智能任务
+                    </button>
+                    <button class="btn btn-outline-danger btn-sm" id="stop-scheduler-btn" onclick="toggleScheduler('stop')" style="display: none;">
+                        <i class="fas fa-stop me-1"></i>停止智能任务
+                    </button>
+                </div>
+                
+                <div class="mt-3">
+                    <small class="text-muted">最近执行记录：</small>
+                    <div id="scheduler-logs" class="mt-2" style="max-height: 150px; overflow-y: auto;">
+                        <div class="text-center text-muted">
+                            <i class="fas fa-spinner fa-spin me-2"></i>加载中...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 最近历史 -->
         <div class="card">
             <div class="card-header">
@@ -395,10 +438,111 @@ function loadRecentHistory() {
     });
 }
 
+// 加载定时任务状态
+function loadSchedulerStatus() {
+    fetch('/scheduler_status')
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // 更新状态显示
+            var statusElement = document.getElementById('scheduler-status');
+            var startBtn = document.getElementById('start-scheduler-btn');
+            var stopBtn = document.getElementById('stop-scheduler-btn');
+            
+            if (data.scheduler_running) {
+                statusElement.innerHTML = '<span class="badge bg-success">运行中</span>';
+                startBtn.style.display = 'none';
+                stopBtn.style.display = 'block';
+            } else {
+                statusElement.innerHTML = '<span class="badge bg-secondary">已停止</span>';
+                startBtn.style.display = 'block';
+                stopBtn.style.display = 'none';
+            }
+            
+            // 更新下次执行时间
+            document.getElementById('next-run').textContent = data.next_run || '-';
+            
+            // 更新执行日志
+            var logsContainer = document.getElementById('scheduler-logs');
+            if (data.recent_logs && data.recent_logs.length > 0) {
+                var logsHtml = '';
+                data.recent_logs.slice(0, 5).forEach(function(log) {
+                    var statusBadge = '';
+                    if (log.status === 'success') {
+                        statusBadge = '<span class="badge bg-success">成功</span>';
+                    } else if (log.status === 'error') {
+                        statusBadge = '<span class="badge bg-danger">失败</span>';
+                    } else {
+                        statusBadge = '<span class="badge bg-warning">无邮件</span>';
+                    }
+                    
+                    logsHtml += `
+                        <div class="border-bottom pb-1 mb-1">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <small class="text-muted">${log.date}</small>
+                                ${statusBadge}
+                            </div>
+                            <div class="small">${log.message}</div>
+                        </div>
+                    `;
+                });
+                logsContainer.innerHTML = logsHtml;
+            } else {
+                logsContainer.innerHTML = '<div class="text-muted text-center small">暂无执行记录</div>';
+            }
+        } else {
+            document.getElementById('scheduler-status').innerHTML = '<span class="badge bg-danger">错误</span>';
+            document.getElementById('scheduler-logs').innerHTML = '<div class="text-danger small">加载失败</div>';
+        }
+    })
+    .catch(error => {
+        document.getElementById('scheduler-status').innerHTML = '<span class="badge bg-danger">错误</span>';
+        document.getElementById('scheduler-logs').innerHTML = '<div class="text-danger small">连接失败</div>';
+    });
+}
+
+// 切换定时任务状态
+function toggleScheduler(action) {
+    var btn = document.getElementById(action + '-scheduler-btn');
+    var originalText = btn.innerHTML;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>操作中...';
+    btn.disabled = true;
+    
+    fetch('/toggle_scheduler', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: action })
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        
+        if (data.success) {
+            showToast(data.message, 'success');
+            // 刷新状态
+            setTimeout(loadSchedulerStatus, 1000);
+        } else {
+            showToast('操作失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        showToast('操作失败: ' + error.message, 'error');
+    });
+}
+
 // 页面加载完成后
 document.addEventListener('DOMContentLoaded', function() {
     updateStats();
     loadRecentHistory();
+    loadSchedulerStatus();
+    
+    // 每30秒刷新一次定时任务状态
+    setInterval(loadSchedulerStatus, 30000);
 });
 </script>
 {% endblock %} 

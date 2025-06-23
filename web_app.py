@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
 日报系统Web应用
-包含富文本编辑器和AI汇总功能
+包含富文本编辑器和AI汇总功能，以及后台定时任务
 """
 
 from flask import Flask, render_template, request, jsonify, redirect, url_for
 import sqlite3
 import os
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import json
 import logging
+import threading
+import time
+import schedule
+import random
 from email_handler import EmailHandler
 from ai_summarizer import AISummarizer
 from config import Config
@@ -23,6 +27,9 @@ app.secret_key = 'your-secret-key-here'
 
 # 数据库配置
 DATABASE = 'daily_reports.db'
+
+# 全局配置
+config = Config()
 
 def init_database():
     """初始化数据库"""
@@ -52,6 +59,18 @@ def init_database():
         )
     ''')
     
+    # 创建定时任务日志表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scheduler_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_date TEXT NOT NULL,
+            status TEXT NOT NULL,
+            message TEXT,
+            email_count INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -60,6 +79,207 @@ def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+class BackgroundScheduler:
+    """后台定时任务调度器"""
+    
+    def __init__(self):
+        self.running = False
+        self.thread = None
+        self.next_random_time = None
+        self.daily_job = None
+        
+    def scheduled_task(self):
+        """定时执行的任务"""
+        try:
+            logger.info("定时任务开始执行...")
+            task_date = date.today().strftime('%Y-%m-%d')
+            
+            # 获取邮件内容
+            email_handler = EmailHandler(config.email)
+            email_reports = email_handler.collect_reports(
+                from_emails=config.report.report_from_emails,
+                subject_keywords=config.report.report_subject_keywords,
+                days=1
+            )
+            
+            if email_reports:
+                # 格式化邮件内容
+                email_content = "\n\n".join([
+                    f"【{report['from']}的日报】\n主题: {report['subject']}\n内容: {report['body']}"
+                    for report in email_reports
+                ])
+                
+                # 检查是否有用户输入的内容
+                conn = get_db_connection()
+                user_content_row = conn.execute(
+                    'SELECT content FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
+                    (task_date,)
+                ).fetchone()
+                
+                user_content = user_content_row['content'] if user_content_row else ""
+                
+                # 合并内容
+                if user_content.strip():
+                    combined_content = f"""
+=== 个人工作内容 ===
+{user_content}
+
+=== 团队邮件日报 ===
+{email_content}
+"""
+                else:
+                    combined_content = f"""
+=== 团队邮件日报 ===
+{email_content}
+"""
+                
+                # AI汇总
+                ai_summarizer = AISummarizer(config.ai)
+                final_report = ai_summarizer.summarize_reports([{
+                    'from': '自动汇总',
+                    'subject': '定时日报汇总',
+                    'body': combined_content,
+                    'date': task_date
+                }])
+                
+                # 保存到数据库
+                conn.execute(
+                    'INSERT INTO generated_reports (date, user_content, email_content, final_report) VALUES (?, ?, ?, ?)',
+                    (task_date, user_content, email_content, final_report)
+                )
+                
+                # 记录任务日志
+                conn.execute(
+                    'INSERT INTO scheduler_logs (task_date, status, message, email_count) VALUES (?, ?, ?, ?)',
+                    (task_date, 'success', f'成功汇总{len(email_reports)}份邮件日报', len(email_reports))
+                )
+                
+                conn.commit()
+                conn.close()
+                
+                logger.info(f"定时任务执行成功，汇总了{len(email_reports)}份邮件日报")
+                
+                # 如果配置了收件人，可以自动发送邮件
+                if config.report.report_recipients:
+                    try:
+                        email_handler.send_email(
+                            to_emails=config.report.report_recipients,
+                            subject=f"团队日报汇总 - {task_date}",
+                            content=final_report,
+                            content_type="plain"
+                        )
+                        logger.info("定时日报邮件发送成功")
+                    except Exception as e:
+                        logger.error(f"定时日报邮件发送失败: {e}")
+            else:
+                # 记录无邮件的情况
+                conn = get_db_connection()
+                conn.execute(
+                    'INSERT INTO scheduler_logs (task_date, status, message, email_count) VALUES (?, ?, ?, ?)',
+                    (task_date, 'no_emails', '未收集到邮件日报', 0)
+                )
+                conn.commit()
+                conn.close()
+                logger.info("定时任务执行完成，但未收集到邮件日报")
+                
+        except Exception as e:
+            logger.error(f"定时任务执行失败: {e}")
+            # 记录错误日志
+            conn = get_db_connection()
+            conn.execute(
+                'INSERT INTO scheduler_logs (task_date, status, message, email_count) VALUES (?, ?, ?, ?)',
+                (date.today().strftime('%Y-%m-%d'), 'error', str(e), 0)
+            )
+            conn.commit()
+            conn.close()
+    
+    def generate_random_time(self):
+        """生成21:00-22:00之间的随机时间"""
+        # 21:00:00 到 21:59:59 之间的随机时间
+        hour = 21
+        minute = random.randint(0, 59)
+        second = random.randint(0, 59)
+        
+        random_time = f"{hour:02d}:{minute:02d}:{second:02d}"
+        return random_time
+    
+    def schedule_next_random_task(self):
+        """安排下一次随机时间的任务"""
+        # 清除之前的任务
+        if self.daily_job:
+            schedule.cancel_job(self.daily_job)
+        
+        # 生成新的随机时间
+        self.next_random_time = self.generate_random_time()
+        
+        # 设置新的定时任务
+        self.daily_job = schedule.every().day.at(self.next_random_time).do(self.execute_and_reschedule)
+        
+        logger.info(f"下一次日报发送时间已设置为: {self.next_random_time}")
+        
+        # 保存到数据库以便Web界面显示
+        try:
+            conn = get_db_connection()
+            # 记录下次执行时间
+            today = date.today().strftime('%Y-%m-%d')
+            conn.execute(
+                'INSERT OR REPLACE INTO scheduler_logs (task_date, status, message, email_count) VALUES (?, ?, ?, ?)',
+                (today + '_schedule', 'scheduled', f'下次执行时间: {self.next_random_time}', 0)
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"保存调度信息失败: {e}")
+    
+    def execute_and_reschedule(self):
+        """执行任务并重新安排下一次"""
+        try:
+            # 执行日报任务
+            self.scheduled_task()
+            
+            # 立即安排明天的随机时间
+            self.schedule_next_random_task()
+            
+        except Exception as e:
+            logger.error(f"执行任务并重新安排失败: {e}")
+            # 即使任务失败，也要安排下一次
+            self.schedule_next_random_task()
+    
+    def run_scheduler(self):
+        """运行调度器"""
+        logger.info("后台定时任务启动...")
+        
+        # 首次启动时安排随机时间任务
+        self.schedule_next_random_task()
+        
+        while self.running:
+            try:
+                schedule.run_pending()
+                time.sleep(30)  # 每30秒检查一次（因为精确到秒）
+            except Exception as e:
+                logger.error(f"定时任务调度异常: {e}")
+                time.sleep(30)
+        
+        logger.info("后台定时任务已停止")
+    
+    def start(self):
+        """启动后台任务"""
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self.run_scheduler, daemon=True)
+            self.thread.start()
+            logger.info("后台定时任务已启动")
+    
+    def stop(self):
+        """停止后台任务"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        logger.info("后台定时任务已停止")
+
+# 创建全局调度器实例
+scheduler = BackgroundScheduler()
 
 @app.route('/')
 def index():
@@ -139,7 +359,6 @@ def generate_report():
         
         # 获取邮件内容
         logger.info("开始获取邮件内容...")
-        config = Config()
         email_handler = EmailHandler(config.email)
         email_reports = email_handler.collect_reports(
             from_emails=config.report.report_from_emails,
@@ -194,6 +413,77 @@ def generate_report():
         logger.error(f"生成日报失败: {e}")
         return jsonify({'success': False, 'message': f'生成失败: {str(e)}'})
 
+@app.route('/scheduler_status')
+def scheduler_status():
+    """获取定时任务状态"""
+    try:
+        conn = get_db_connection()
+        
+        # 获取最近的任务日志
+        recent_logs = conn.execute(
+            'SELECT * FROM scheduler_logs ORDER BY created_at DESC LIMIT 10'
+        ).fetchall()
+        
+        # 获取下次执行时间
+        next_run = None
+        if scheduler.next_random_time:
+            # 计算下次执行的完整日期时间
+            today = datetime.now()
+            next_date = today.date()
+            
+            # 如果当前时间已经过了今天的随机时间，则显示明天的时间
+            current_time = today.time()
+            random_time_parts = scheduler.next_random_time.split(':')
+            random_time = datetime.strptime(scheduler.next_random_time, '%H:%M:%S').time()
+            
+            if current_time > random_time:
+                next_date = today.date() + timedelta(days=1)
+            
+            next_run = f"{next_date} {scheduler.next_random_time}"
+        
+        conn.close()
+        
+        logs = []
+        for log in recent_logs:
+            logs.append({
+                'date': log['task_date'],
+                'status': log['status'],
+                'message': log['message'],
+                'email_count': log['email_count'],
+                'created_at': log['created_at']
+            })
+        
+        return jsonify({
+            'success': True,
+            'scheduler_running': scheduler.running,
+            'next_run': next_run,
+            'recent_logs': logs
+        })
+        
+    except Exception as e:
+        logger.error(f"获取定时任务状态失败: {e}")
+        return jsonify({'success': False, 'message': f'获取状态失败: {str(e)}'})
+
+@app.route('/toggle_scheduler', methods=['POST'])
+def toggle_scheduler():
+    """启动/停止定时任务"""
+    try:
+        data = request.get_json()
+        action = data.get('action', 'start')
+        
+        if action == 'start':
+            scheduler.start()
+            return jsonify({'success': True, 'message': '定时任务已启动'})
+        elif action == 'stop':
+            scheduler.stop()
+            return jsonify({'success': True, 'message': '定时任务已停止'})
+        else:
+            return jsonify({'success': False, 'message': '无效的操作'})
+            
+    except Exception as e:
+        logger.error(f"切换定时任务状态失败: {e}")
+        return jsonify({'success': False, 'message': f'操作失败: {str(e)}'})
+
 @app.route('/history')
 def history():
     """历史记录页面"""
@@ -220,9 +510,106 @@ def api_history():
         'created_at': report['created_at']
     } for report in reports])
 
-if __name__ == '__main__':
-    # 初始化数据库
-    init_database()
+def show_startup_info():
+    """显示启动信息"""
+    print("=" * 60)
+    print("🚀 智能日报系统 - Web版启动中...")
+    print("=" * 60)
     
-    # 启动应用
-    app.run(host='0.0.0.0', port=5002, debug=True) 
+    print(f"📅 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🌐 Web地址: http://localhost:5000")
+    print(f"📧 邮箱配置: {config.email.username}")
+    print(f"🤖 AI配置: 阿里云百炼 (App ID: {config.ai.app_id[:8]}...)")
+    
+    print("\n⏰ 智能定时功能:")
+    print("   • 每天21:00-22:00随机时间自动发送日报")
+    print("   • 精确到秒级，共3600种可能时间")
+    print("   • 自动收集团队邮件并AI汇总")
+    print("   • 可选自动发送给指定收件人")
+    
+    print(f"\n📬 邮件收集配置:")
+    for email in config.report.report_from_emails:
+        print(f"   • {email}")
+    
+    if config.report.report_recipients:
+        print(f"\n📤 自动发送给:")
+        for email in config.report.report_recipients:
+            print(f"   • {email}")
+    else:
+        print(f"\n📤 自动发送: 未配置收件人")
+    
+    print("\n💡 功能特色:")
+    print("   ✓ Web界面编辑和预览")
+    print("   ✓ 智能模板快速插入")
+    print("   ✓ 实时定时任务监控")
+    print("   ✓ 历史记录管理")
+    print("   ✓ 随机时间避免机械化")
+    
+    print("\n🔧 操作指南:")
+    print("   1. 在Web界面输入个人工作内容")
+    print("   2. 系统会自动在随机时间收集邮件")
+    print("   3. AI智能汇总并发送综合日报")
+    print("   4. 可在Web界面查看状态和历史")
+    
+    print("\n" + "=" * 60)
+
+def check_environment():
+    """检查环境配置"""
+    issues = []
+    
+    if not config.email.username:
+        issues.append("❌ 邮箱用户名未配置")
+    
+    if not config.email.password:
+        issues.append("❌ 邮箱密码未配置")
+    
+    if not config.ai.api_key:
+        issues.append("❌ DASHSCOPE_API_KEY未配置")
+    
+    if not config.ai.app_id:
+        issues.append("❌ DASHSCOPE_APP_ID未配置")
+    
+    if issues:
+        print("⚠️  配置检查发现问题:")
+        for issue in issues:
+            print(f"   {issue}")
+        print("\n请检查.env文件配置后重新启动")
+        return False
+    
+    print("✅ 环境配置检查通过")
+    return True
+
+if __name__ == '__main__':
+    import sys
+    
+    try:
+        # 显示启动信息
+        show_startup_info()
+        
+        # 检查环境配置
+        if not check_environment():
+            sys.exit(1)
+        
+        print("🔄 正在启动Web服务和智能定时任务...")
+        
+        # 初始化数据库
+        init_database()
+        
+        # 自动启动定时任务
+        scheduler.start()
+        logger.info("Web应用启动，定时任务已自动启动")
+        
+        # 启动应用
+        app.run(host='0.0.0.0', port=5000, debug=False)
+        
+    except KeyboardInterrupt:
+        print("\n\n🛑 收到停止信号")
+        print("📊 正在安全关闭智能定时任务...")
+        scheduler.stop()
+        print("✅ 智能日报系统已安全关闭")
+        
+    except Exception as e:
+        print(f"\n❌ 启动失败: {e}")
+        logger.error(f"应用运行异常: {e}")
+        scheduler.stop()
+        sys.exit(1) 
