@@ -128,16 +128,12 @@ class EmailHandler:
             
             # 计算日期范围
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
             
-            # 搜索邮件
-            date_criteria = start_date.strftime("%d-%b-%Y")
+            # 搜索邮件 - 只用日期条件，不在IMAP中过滤发件人
+            date_criteria = end_date.strftime("%d-%b-%Y")
             search_criteria = f'(SINCE "{date_criteria}")'
             
-            # 如果指定了发件人
-            if from_emails:
-                from_criteria = ' OR '.join([f'FROM "{email}"' for email in from_emails])
-                search_criteria += f' ({from_criteria})'
+            # 不在IMAP搜索中过滤发件人，改为后续手动过滤
             
             logger.info(f"搜索条件: {search_criteria}")
             status, messages = mail.search(None, search_criteria)
@@ -163,6 +159,10 @@ class EmailHandler:
                     subject = self.decode_mime_words(msg.get('Subject', ''))
                     from_addr = self.decode_mime_words(msg.get('From', ''))
                     date_str = msg.get('Date', '')
+                    
+                    # 手动过滤发件人
+                    if from_emails and not any(target_email in from_addr for target_email in from_emails):
+                        continue
                     
                     # 检查主题是否包含关键词
                     if not any(keyword in subject for keyword in subject_keywords):
