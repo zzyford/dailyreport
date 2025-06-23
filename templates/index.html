@@ -16,8 +16,11 @@
                 <h5 class="mb-0">
                     <i class="fas fa-edit me-2"></i>工作内容编辑
                 </h5>
-                <div>
+                <div class="d-flex align-items-center gap-2">
                     <input type="date" id="report-date" class="form-control d-inline-block" style="width: auto;" value="{{ current_date }}">
+                    <button type="button" class="btn btn-outline-warning btn-sm" onclick="testJune20()" title="测试6月20日邮件">
+                        <i class="fas fa-test-tube me-1"></i>测试6/20
+                    </button>
                 </div>
             </div>
             <div class="card-body">
@@ -280,7 +283,19 @@ document.getElementById('generate-btn').addEventListener('click', function() {
             document.getElementById('generated-report').innerHTML = marked.parse(data.report);
             var modal = new bootstrap.Modal(document.getElementById('result-modal'));
             modal.show();
-            showToast('日报生成成功！合并了' + data.email_count + '份邮件日报', 'success');
+            
+            // 构建成功消息
+            var successMessage = '日报生成成功！合并了' + data.email_count + '份邮件日报';
+            if (data.content_source && data.content_source.is_fallback) {
+                successMessage += '\n' + data.content_source.message;
+                showToast(successMessage, 'warning');
+            } else {
+                if (data.content_source) {
+                    successMessage += '\n' + data.content_source.message;
+                }
+                showToast(successMessage, 'success');
+            }
+            
             loadRecentHistory(); // 刷新历史记录
         } else {
             showToast('生成失败: ' + data.message, 'error');
@@ -381,6 +396,44 @@ function insertTemplate(type) {
         
         updateStats();
     }
+}
+
+// 测试6月20日邮件
+function testJune20() {
+    // 设置日期为2025-06-20
+    document.getElementById('report-date').value = '2025-06-20';
+    
+    // 获取当前编辑器内容
+    var editor = document.getElementById('markdown-editor');
+    var currentContent = editor.value.trim();
+    
+    if (!currentContent) {
+        showToast('请先在编辑器中输入您的工作内容，然后再点击测试按钮', 'warning');
+        return;
+    }
+    
+    // 自动保存当前内容到数据库（使用6月20日的日期）
+    fetch('/save_content', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            content: currentContent,
+            date: '2025-06-20'
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showToast('已切换到6月20日测试模式并保存您的内容，现在可以点击"生成日报"开始测试', 'success');
+        } else {
+            showToast('内容保存失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        showToast('保存失败: ' + error.message, 'error');
+    });
 }
 
 // 复制到剪贴板

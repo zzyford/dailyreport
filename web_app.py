@@ -81,6 +81,38 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def get_user_content_for_date(target_date: str) -> tuple:
+    """
+    获取指定日期的用户内容，如果没有则获取最近的一份
+    返回 (content, actual_date, is_fallback)
+    """
+    conn = get_db_connection()
+    
+    # 首先尝试获取指定日期的内容
+    user_content_row = conn.execute(
+        'SELECT content, date FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
+        (target_date,)
+    ).fetchone()
+    
+    if user_content_row and user_content_row['content'].strip():
+        conn.close()
+        return user_content_row['content'], user_content_row['date'], False
+    
+    # 如果指定日期没有内容，获取最近的一份
+    logger.info(f"指定日期 {target_date} 没有用户内容，尝试获取最近的内容...")
+    
+    recent_content_row = conn.execute(
+        'SELECT content, date FROM user_content WHERE content IS NOT NULL AND content != "" ORDER BY date DESC, updated_at DESC LIMIT 1'
+    ).fetchone()
+    
+    conn.close()
+    
+    if recent_content_row and recent_content_row['content'].strip():
+        logger.info(f"使用 {recent_content_row['date']} 的内容作为备用")
+        return recent_content_row['content'], recent_content_row['date'], True
+    
+    return "", target_date, False
+
 class BackgroundScheduler:
     """后台定时任务调度器"""
     
@@ -111,14 +143,13 @@ class BackgroundScheduler:
                     for report in email_reports
                 ])
                 
-                # 检查是否有用户输入的内容
-                conn = get_db_connection()
-                user_content_row = conn.execute(
-                    'SELECT content FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
-                    (task_date,)
-                ).fetchone()
+                # 获取用户输入的内容（如果当天没有则使用最近的一份）
+                user_content, actual_date, is_fallback = get_user_content_for_date(task_date)
                 
-                user_content = user_content_row['content'] if user_content_row else ""
+                if is_fallback and user_content.strip():
+                    logger.info(f"定时任务使用备用内容：来自 {actual_date} 的工作内容")
+                
+                conn = get_db_connection()
                 
                 # 合并内容
                 if user_content.strip():
@@ -350,17 +381,16 @@ def generate_report():
         data = request.get_json()
         report_date = data.get('date', date.today().strftime('%Y-%m-%d'))
         
-        # 获取用户输入的内容
-        conn = get_db_connection()
-        user_content_row = conn.execute(
-            'SELECT content FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
-            (report_date,)
-        ).fetchone()
-        
-        user_content = user_content_row['content'] if user_content_row else ""
+        # 获取用户输入的内容（如果当天没有则使用最近的一份）
+        user_content, actual_date, is_fallback = get_user_content_for_date(report_date)
         
         if not user_content.strip():
-            return jsonify({'success': False, 'message': '请先输入工作内容'})
+            return jsonify({'success': False, 'message': '没有找到可用的工作内容，请先输入工作内容'})
+        
+        if is_fallback:
+            logger.info(f"使用备用内容：来自 {actual_date} 的工作内容")
+        
+        conn = get_db_connection()
         
         # 获取邮件内容
         logger.info("开始获取邮件内容...")
@@ -406,7 +436,12 @@ def generate_report():
         return jsonify({
             'success': True, 
             'report': final_report,
-            'email_count': len(email_reports) if email_reports else 0
+            'email_count': len(email_reports) if email_reports else 0,
+            'content_source': {
+                'date': actual_date,
+                'is_fallback': is_fallback,
+                'message': f"⚠️ 当天无内容，使用了 {actual_date} 的工作内容作为备用" if is_fallback else f"✅ 使用了 {actual_date} 的工作内容"
+            }
         })
         
     except Exception as e:
