@@ -376,24 +376,19 @@ def generate_report():
         else:
             logger.info("未获取到邮件日报")
         
-        # 合并内容
-        combined_content = f"""
-=== 个人工作内容 ===
-{user_content}
-
-=== 团队邮件日报 ===
-{email_content if email_content else "暂无邮件日报"}
-"""
+        # 不再需要合并内容，直接分离处理
         
-        # AI汇总
-        logger.info("开始AI汇总...")
+        logger.info(f"=== 准备分离处理个人和团队内容 ===")
+        logger.info(f"个人内容长度: {len(user_content)} 字符")
+        logger.info(f"团队邮件数量: {len(email_reports) if email_reports else 0}")
+        
+        # AI分离汇总
+        logger.info("开始AI分离汇总...")
         ai_summarizer = AISummarizer(config.ai)
-        final_report = ai_summarizer.summarize_reports([{
-            'from': '综合日报',
-            'subject': '综合日报汇总',
-            'body': combined_content,
-            'date': report_date
-        }])
+        final_report = ai_summarizer.summarize_reports_separated(
+            personal_content=user_content,
+            team_reports=email_reports if email_reports else []
+        )
         
         # 保存生成的日报
         conn.execute(
