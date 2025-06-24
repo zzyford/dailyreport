@@ -28,6 +28,15 @@
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
                 
+                <!-- 备用内容提示 -->
+                {% if content_info.is_fallback %}
+                <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                    <i class="fas fa-exclamation-triangle me-2"></i>
+                    <strong>提示：</strong>{{ content_info.fallback_message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endif %}
+                
                 <!-- Markdown编辑器 -->
                 <textarea id="markdown-editor" class="form-control" style="height: 400px; font-family: 'Monaco', 'Courier New', monospace; resize: vertical;" placeholder="请输入您的工作内容，支持Markdown格式...">{{ current_content | safe }}</textarea>
                 
@@ -547,11 +556,65 @@ function toggleScheduler(action) {
     });
 }
 
+// 加载指定日期的内容
+function loadContentForDate(selectedDate) {
+    fetch('/api/get_content_for_date', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            date: selectedDate
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // 更新编辑器内容
+            editor.value = data.content || '';
+            updateStats();
+            
+            // 移除现有的提示框
+            var existingAlert = document.querySelector('.alert-warning');
+            if (existingAlert) {
+                existingAlert.remove();
+            }
+            
+            // 如果是备用内容，显示提示
+            if (data.content_info.is_fallback && data.content_info.fallback_message) {
+                var alertHtml = `
+                    <div class="alert alert-warning alert-dismissible fade show" role="alert">
+                        <i class="fas fa-exclamation-triangle me-2"></i>
+                        <strong>提示：</strong>${data.content_info.fallback_message}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                `;
+                // 插入到编辑器上方
+                var editorContainer = document.querySelector('#markdown-editor').parentNode;
+                editorContainer.insertAdjacentHTML('beforebegin', alertHtml);
+            }
+        } else {
+            showToast('加载内容失败: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        showToast('加载内容失败: ' + error.message, 'error');
+    });
+}
+
 // 页面加载完成后
 document.addEventListener('DOMContentLoaded', function() {
     updateStats();
     loadRecentHistory();
     loadSchedulerStatus();
+    
+    // 添加日期选择器变化事件
+    document.getElementById('report-date').addEventListener('change', function() {
+        var selectedDate = this.value;
+        if (selectedDate) {
+            loadContentForDate(selectedDate);
+        }
+    });
     
     // 每30秒刷新一次定时任务状态
     setInterval(loadSchedulerStatus, 30000);

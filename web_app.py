@@ -90,24 +90,24 @@ def get_user_content_for_date(target_date: str) -> tuple:
     
     # 首先尝试获取指定日期的内容
     user_content_row = conn.execute(
-        'SELECT content, date FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
+        'SELECT content, date FROM user_content WHERE date = ? AND content IS NOT NULL AND TRIM(content) != "" ORDER BY updated_at DESC LIMIT 1',
         (target_date,)
     ).fetchone()
     
-    if user_content_row and user_content_row['content'].strip():
+    if user_content_row:
         conn.close()
         return user_content_row['content'], user_content_row['date'], False
     
-    # 如果指定日期没有内容，获取最近的一份
-    logger.info(f"指定日期 {target_date} 没有用户内容，尝试获取最近的内容...")
+    # 如果指定日期没有有效内容，获取最近的一份
+    logger.info(f"指定日期 {target_date} 没有有效用户内容，尝试获取最近的内容...")
     
     recent_content_row = conn.execute(
-        'SELECT content, date FROM user_content WHERE content IS NOT NULL AND content != "" ORDER BY date DESC, updated_at DESC LIMIT 1'
+        'SELECT content, date FROM user_content WHERE content IS NOT NULL AND TRIM(content) != "" ORDER BY date DESC, updated_at DESC LIMIT 1'
     ).fetchone()
     
     conn.close()
     
-    if recent_content_row and recent_content_row['content'].strip():
+    if recent_content_row:
         logger.info(f"使用 {recent_content_row['date']} 的内容作为备用")
         return recent_content_row['content'], recent_content_row['date'], True
     
@@ -322,19 +322,21 @@ def index():
     """主页面"""
     today = date.today().strftime('%Y-%m-%d')
     
-    # 获取今天的内容
-    conn = get_db_connection()
-    user_content = conn.execute(
-        'SELECT * FROM user_content WHERE date = ? ORDER BY updated_at DESC LIMIT 1',
-        (today,)
-    ).fetchone()
-    conn.close()
+    # 获取今天的内容，如果没有则获取最近的一份作为默认值
+    current_content, actual_date, is_fallback = get_user_content_for_date(today)
     
-    current_content = user_content['content'] if user_content else ""
+    # 准备传递给模板的内容信息
+    content_info = {
+        'content': current_content,
+        'source_date': actual_date,
+        'is_fallback': is_fallback,
+        'fallback_message': f"当天无内容，已加载 {actual_date} 的工作内容作为参考" if is_fallback else None
+    }
     
     return render_template('index.html', 
                          current_date=today,
-                         current_content=current_content)
+                         current_content=current_content,
+                         content_info=content_info)
 
 @app.route('/save_content', methods=['POST'])
 def save_content():
@@ -544,6 +546,30 @@ def api_history():
         'content': report['final_report'],
         'created_at': report['created_at']
     } for report in reports])
+
+@app.route('/api/get_content_for_date', methods=['POST'])
+def get_content_for_date():
+    """根据日期获取内容API"""
+    try:
+        data = request.get_json()
+        target_date = data.get('date', date.today().strftime('%Y-%m-%d'))
+        
+        # 获取指定日期的内容，如果没有则获取最近的一份
+        content, actual_date, is_fallback = get_user_content_for_date(target_date)
+        
+        return jsonify({
+            'success': True,
+            'content': content,
+            'content_info': {
+                'source_date': actual_date,
+                'is_fallback': is_fallback,
+                'fallback_message': f"当天无内容，已加载 {actual_date} 的工作内容作为参考" if is_fallback else None
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"获取内容失败: {e}")
+        return jsonify({'success': False, 'message': f'获取内容失败: {str(e)}'})
 
 @app.route('/send_history_email', methods=['POST'])
 def send_history_email():
