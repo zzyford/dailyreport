@@ -137,12 +137,6 @@ class BackgroundScheduler:
             )
             
             if email_reports:
-                # 格式化邮件内容
-                email_content = "\n\n".join([
-                    f"【{report['from']}的日报】\n主题: {report['subject']}\n内容: {report['body']}"
-                    for report in email_reports
-                ])
-                
                 # 获取用户输入的内容（如果当天没有则使用最近的一份）
                 user_content, actual_date, is_fallback = get_user_content_for_date(task_date)
                 
@@ -151,29 +145,27 @@ class BackgroundScheduler:
                 
                 conn = get_db_connection()
                 
-                # 合并内容
-                if user_content.strip():
-                    combined_content = f"""
-=== 个人工作内容 ===
-{user_content}
-
-=== 团队邮件日报 ===
-{email_content}
-"""
+                # 格式化邮件内容用于数据库存储（与生成按钮保持一致）
+                email_content = ""
+                if email_reports:
+                    email_content = "\n\n".join([
+                        f"【{report['from']}的日报】\n主题: {report['subject']}\n内容: {report['body']}"
+                        for report in email_reports
+                    ])
+                    logger.info(f"获取到 {len(email_reports)} 份邮件日报")
                 else:
-                    combined_content = f"""
-=== 团队邮件日报 ===
-{email_content}
-"""
+                    logger.info("未获取到邮件日报")
                 
-                # AI汇总
+                # AI分离汇总（与生成按钮保持一致）
+                logger.info(f"=== 定时任务：准备分离处理个人和团队内容 ===")
+                logger.info(f"个人内容长度: {len(user_content)} 字符")
+                logger.info(f"团队邮件数量: {len(email_reports)}")
+                
                 ai_summarizer = AISummarizer(config.ai)
-                final_report = ai_summarizer.summarize_reports([{
-                    'from': '自动汇总',
-                    'subject': '定时日报汇总',
-                    'body': combined_content,
-                    'date': task_date
-                }])
+                final_report = ai_summarizer.summarize_reports_separated(
+                    personal_content=user_content,
+                    team_reports=email_reports if email_reports else []
+                )
                 
                 # 保存到数据库
                 conn.execute(
