@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
+# 配置应用以支持长时间运行的请求
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 300  # 5分钟文件缓存
+app.config['PERMANENT_SESSION_LIFETIME'] = 1800  # 30分钟session有效期
+
 # 数据库配置
 DATABASE = 'daily_reports.db'
 
@@ -370,8 +374,12 @@ def save_content():
 
 @app.route('/generate_report', methods=['POST'])
 def generate_report():
-    """生成日报"""
+    """生成日报 - 支持长时间AI处理"""
     try:
+        # 设置响应头，支持长时间请求
+        import time
+        start_time = time.time()
+        
         data = request.get_json()
         report_date = data.get('date', date.today().strftime('%Y-%m-%d'))
         
@@ -411,13 +419,19 @@ def generate_report():
         logger.info(f"个人内容长度: {len(user_content)} 字符")
         logger.info(f"团队邮件数量: {len(email_reports) if email_reports else 0}")
         
-        # AI分离汇总
-        logger.info("开始AI分离汇总...")
+        # AI分离汇总 - 这是最耗时的操作
+        logger.info("开始AI分离汇总... (可能需要1-3分钟，请耐心等待)")
+        ai_start_time = time.time()
+        
         ai_summarizer = AISummarizer(config.ai)
         final_report = ai_summarizer.summarize_reports_separated(
             personal_content=user_content,
             team_reports=email_reports if email_reports else []
         )
+        
+        ai_end_time = time.time()
+        ai_duration = round(ai_end_time - ai_start_time, 2)
+        logger.info(f"AI汇总完成，耗时: {ai_duration}秒")
         
         # 保存生成的日报
         conn.execute(
@@ -427,6 +441,9 @@ def generate_report():
         conn.commit()
         conn.close()
         
+        total_duration = round(time.time() - start_time, 2)
+        logger.info(f"日报生成完成，总耗时: {total_duration}秒")
+        
         return jsonify({
             'success': True, 
             'report': final_report,
@@ -435,6 +452,10 @@ def generate_report():
                 'date': actual_date,
                 'is_fallback': is_fallback,
                 'message': f"⚠️ 当天无内容，使用了 {actual_date} 的工作内容作为备用" if is_fallback else f"✅ 使用了 {actual_date} 的工作内容"
+            },
+            'processing_time': {
+                'ai_duration': ai_duration,
+                'total_duration': total_duration
             }
         })
         
@@ -722,7 +743,9 @@ if __name__ == '__main__':
             port=5002, 
             debug=True,  # 启用调试模式
             use_reloader=True,  # 启用热更新
-            threaded=True  # 启用多线程支持
+            threaded=True,  # 启用多线程支持
+            request_handler=None,  # 使用默认请求处理器
+            processes=1  # 单进程模式，避免多进程冲突
         )
         
     except KeyboardInterrupt:

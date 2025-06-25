@@ -268,9 +268,16 @@ document.getElementById('generate-btn').addEventListener('click', function() {
     // 显示加载状态
     var btn = this;
     var originalText = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>生成中...';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>AI处理中...';
     btn.disabled = true;
     
+    // 显示处理提示
+    showToast('正在生成日报，AI处理需要1-3分钟，请耐心等待...', 'info');
+    
+    // 创建一个带超时的 fetch 请求
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5分钟超时
+
     fetch('/generate_report', {
         method: 'POST',
         headers: {
@@ -278,10 +285,12 @@ document.getElementById('generate-btn').addEventListener('click', function() {
         },
         body: JSON.stringify({
             date: date
-        })
+        }),
+        signal: controller.signal
     })
     .then(response => response.json())
     .then(data => {
+        clearTimeout(timeoutId); // 请求成功，清除超时
         btn.innerHTML = originalText;
         btn.disabled = false;
         
@@ -292,6 +301,12 @@ document.getElementById('generate-btn').addEventListener('click', function() {
             
             // 构建成功消息
             var successMessage = '日报生成成功！合并了' + data.email_count + '份邮件日报';
+            
+            // 添加处理时间信息
+            if (data.processing_time) {
+                successMessage += '\n处理时间：' + data.processing_time.total_duration + '秒 (AI耗时：' + data.processing_time.ai_duration + '秒)';
+            }
+            
             if (data.content_source && data.content_source.is_fallback) {
                 successMessage += '\n' + data.content_source.message;
                 showToast(successMessage, 'warning');
@@ -308,9 +323,15 @@ document.getElementById('generate-btn').addEventListener('click', function() {
         }
     })
     .catch(error => {
+        clearTimeout(timeoutId); // 清除超时
         btn.innerHTML = originalText;
         btn.disabled = false;
-        showToast('生成失败: ' + error.message, 'error');
+        
+        if (error.name === 'AbortError') {
+            showToast('生成超时，请稍后重试。AI处理需要较长时间，请耐心等待。', 'error');
+        } else {
+            showToast('生成失败: ' + error.message, 'error');
+        }
     });
 });
 
