@@ -4,7 +4,7 @@
 包含富文本编辑器和AI汇总功能，以及后台定时任务
 """
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, stream_template
 import sqlite3
 import os
 from datetime import datetime, date, timedelta
@@ -29,6 +29,10 @@ app.secret_key = 'your-secret-key-here'
 # 配置应用以支持长时间运行的请求
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 300  # 5分钟文件缓存
 app.config['PERMANENT_SESSION_LIFETIME'] = 1800  # 30分钟session有效期
+
+# 增加请求超时配置
+import socket
+socket.setdefaulttimeout(600)  # 10分钟socket超时
 
 # 数据库配置
 DATABASE = 'daily_reports.db'
@@ -473,6 +477,151 @@ def generate_report():
     except Exception as e:
         logger.error(f"生成日报失败: {e}")
         return jsonify({'success': False, 'message': f'生成失败: {str(e)}'})
+
+@app.route('/generate_report_async', methods=['POST'])
+def generate_report_async():
+    """异步生成日报 - 支持长时间处理，定期发送心跳"""
+    import json
+    
+    def generate():
+        try:
+            # 发送开始信号
+            yield f"data: {json.dumps({'type': 'start', 'message': '开始生成日报...'})}\n\n"
+            
+            # 设置响应头，支持长时间请求
+            import time
+            start_time = time.time()
+            
+            data = request.get_json()
+            report_date = data.get('date', date.today().strftime('%Y-%m-%d'))
+            
+            # 获取用户输入的内容（如果当天没有则使用最近的一份）
+            yield f"data: {json.dumps({'type': 'progress', 'message': '获取用户内容...'})}\n\n"
+            user_content, actual_date, is_fallback = get_user_content_for_date(report_date)
+            
+            if not user_content.strip():
+                yield f"data: {json.dumps({'type': 'error', 'message': '没有找到可用的工作内容，请先输入工作内容'})}\n\n"
+                return
+            
+            if is_fallback:
+                logger.info(f"使用备用内容：来自 {actual_date} 的工作内容")
+            
+            conn = get_db_connection()
+            
+            # 获取邮件内容
+            yield f"data: {json.dumps({'type': 'progress', 'message': '连接邮箱服务器...'})}\n\n"
+            logger.info("开始获取邮件内容...")
+            logger.info(f"📬 当前配置的日报收集邮箱 (共{len(config.report.report_from_emails)}个):")
+            for i, email_addr in enumerate(config.report.report_from_emails, 1):
+                logger.info(f"   {i}. {email_addr}")
+            logger.info(f"🔍 搜索关键词: {config.report.report_subject_keywords}")
+            logger.info(f"📅 收集范围: 最近{config.report.collect_days}天内的邮件")
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': f'搜索{len(config.report.report_from_emails)}个邮箱的日报...'})}\n\n"
+            
+            email_handler = EmailHandler(config.email)
+            email_reports = email_handler.collect_reports(
+                from_emails=config.report.report_from_emails,
+                subject_keywords=config.report.report_subject_keywords,
+                days=1
+            )
+            
+            email_content = ""
+            if email_reports:
+                email_content = "\n\n".join([
+                    f"【{report['from']}的日报】\n主题: {report['subject']}\n内容: {report['body']}"
+                    for report in email_reports
+                ])
+                logger.info(f"获取到 {len(email_reports)} 份邮件日报")
+                yield f"data: {json.dumps({'type': 'progress', 'message': f'收集到{len(email_reports)}份邮件日报'})}\n\n"
+            else:
+                logger.info("未获取到邮件日报")
+                yield f"data: {json.dumps({'type': 'progress', 'message': '未收集到邮件日报'})}\n\n"
+            
+            logger.info(f"=== 准备分离处理个人和团队内容 ===")
+            logger.info(f"个人内容长度: {len(user_content)} 字符")
+            logger.info(f"团队邮件数量: {len(email_reports) if email_reports else 0}")
+            
+            # AI分离汇总 - 这是最耗时的操作
+            yield f"data: {json.dumps({'type': 'progress', 'message': '启动AI智能汇总，预计需要1-3分钟...'})}\n\n"
+            logger.info("开始AI分离汇总... (可能需要1-3分钟，请耐心等待)")
+            ai_start_time = time.time()
+            
+            # 定期发送心跳，防止超时
+            def send_heartbeat():
+                heartbeat_count = 0
+                while True:
+                    time.sleep(15)  # 每15秒发送一次心跳
+                    heartbeat_count += 1
+                    elapsed = int(time.time() - ai_start_time)
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'message': f'AI处理中...已用时{elapsed}秒', 'count': heartbeat_count})}\n\n"
+                    if elapsed > 300:  # 超过5分钟停止心跳
+                        break
+            
+            # 启动心跳线程
+            import threading
+            heartbeat_active = True
+            
+            def heartbeat_worker():
+                count = 0
+                while heartbeat_active:
+                    time.sleep(15)
+                    count += 1
+                    elapsed = int(time.time() - ai_start_time)
+                    # 注意：这里不能直接yield，需要其他方式处理
+                    logger.info(f"心跳 #{count}: AI处理中，已用时{elapsed}秒")
+            
+            heartbeat_thread = threading.Thread(target=heartbeat_worker)
+            heartbeat_thread.daemon = True
+            heartbeat_thread.start()
+            
+            ai_summarizer = AISummarizer(config.ai)
+            final_report = ai_summarizer.summarize_reports_separated(
+                personal_content=user_content,
+                team_reports=email_reports if email_reports else []
+            )
+            
+            heartbeat_active = False  # 停止心跳
+            
+            ai_end_time = time.time()
+            ai_duration = round(ai_end_time - ai_start_time, 2)
+            logger.info(f"AI汇总完成，耗时: {ai_duration}秒")
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': f'AI汇总完成，耗时{ai_duration}秒'})}\n\n"
+            
+            # 保存生成的日报
+            conn.execute(
+                'INSERT INTO generated_reports (date, user_content, email_content, final_report) VALUES (?, ?, ?, ?)',
+                (report_date, user_content, email_content, final_report)
+            )
+            conn.commit()
+            conn.close()
+            
+            total_duration = round(time.time() - start_time, 2)
+            logger.info(f"日报生成完成，总耗时: {total_duration}秒")
+            
+            # 发送成功结果
+            result = {
+                'type': 'success',
+                'report': final_report,
+                'email_count': len(email_reports) if email_reports else 0,
+                'content_source': {
+                    'date': actual_date,
+                    'is_fallback': is_fallback,
+                    'message': f"⚠️ 当天无内容，使用了 {actual_date} 的工作内容作为备用" if is_fallback else f"✅ 使用了 {actual_date} 的工作内容"
+                },
+                'processing_time': {
+                    'ai_duration': ai_duration,
+                    'total_duration': total_duration
+                }
+            }
+            yield f"data: {json.dumps(result)}\n\n"
+            
+        except Exception as e:
+            logger.error(f"生成日报失败: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': f'生成失败: {str(e)}'})}\n\n"
+    
+    return Response(generate(), mimetype='text/plain')
 
 @app.route('/scheduler_status')
 def scheduler_status():
