@@ -119,6 +119,16 @@ class EmailHandler:
                        subject_keywords: List[str], 
                        days: int = 1) -> List[Dict]:
         """收集日报邮件"""
+        # 打印详细的收集配置
+        logger.info("=" * 50)
+        logger.info("📧 开始收集日报邮件")
+        logger.info(f"📬 目标邮箱列表 (共{len(from_emails)}个):")
+        for i, email_addr in enumerate(from_emails, 1):
+            logger.info(f"   {i}. {email_addr}")
+        logger.info(f"🔍 搜索关键词: {subject_keywords}")
+        logger.info(f"📅 时间范围: 最近{days}天")
+        logger.info("=" * 50)
+        
         reports = []
         mail = self.connect_imap()
         
@@ -161,11 +171,15 @@ class EmailHandler:
                     date_str = msg.get('Date', '')
                     
                     # 手动过滤发件人
-                    if from_emails and not any(target_email in from_addr for target_email in from_emails):
+                    sender_match = any(target_email in from_addr for target_email in from_emails) if from_emails else True
+                    if not sender_match:
+                        logger.debug(f"跳过邮件 (发件人不匹配): {from_addr}")
                         continue
                     
                     # 检查主题是否包含关键词
-                    if not any(keyword in subject for keyword in subject_keywords):
+                    keyword_match = any(keyword in subject for keyword in subject_keywords)
+                    if not keyword_match:
+                        logger.debug(f"跳过邮件 (主题不包含关键词): {subject}")
                         continue
                     
                     # 获取邮件正文
@@ -178,7 +192,9 @@ class EmailHandler:
                             'date': date_str,
                             'body': body
                         })
-                        logger.info(f"收集到日报: {subject} - {from_addr}")
+                        logger.info(f"✅ 收集到日报: {subject} - {from_addr}")
+                    else:
+                        logger.warning(f"⚠️ 邮件正文为空: {subject} - {from_addr}")
                 
                 except Exception as e:
                     logger.error(f"处理邮件 {email_id} 时出错: {e}")
@@ -188,7 +204,23 @@ class EmailHandler:
             mail.close()
             mail.logout()
         
-        logger.info(f"共收集到 {len(reports)} 份日报")
+        # 详细的收集结果汇总
+        logger.info("=" * 50)
+        logger.info(f"📊 日报收集完成")
+        logger.info(f"✅ 成功收集: {len(reports)} 份日报")
+        
+        if reports:
+            logger.info("📋 收集到的日报详情:")
+            for i, report in enumerate(reports, 1):
+                logger.info(f"   {i}. {report['from']} - {report['subject']}")
+        else:
+            logger.warning("⚠️ 未收集到任何日报邮件")
+            logger.info("💡 可能的原因:")
+            logger.info("   1. 目标邮箱今天没有发送日报")
+            logger.info("   2. 邮件主题不包含指定关键词")
+            logger.info("   3. 邮件时间不在搜索范围内")
+        
+        logger.info("=" * 50)
         return reports
     
     def send_email(self, 

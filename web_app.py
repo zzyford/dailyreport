@@ -133,6 +133,11 @@ class BackgroundScheduler:
             task_date = date.today().strftime('%Y-%m-%d')
             
             # 获取邮件内容
+            logger.info(f"📬 定时任务 - 当前配置的日报收集邮箱 (共{len(config.report.report_from_emails)}个):")
+            for i, email in enumerate(config.report.report_from_emails, 1):
+                logger.info(f"   {i}. {email}")
+            logger.info(f"🔍 定时任务 - 搜索关键词: {config.report.report_subject_keywords}")
+            
             email_handler = EmailHandler(config.email)
             email_reports = email_handler.collect_reports(
                 from_emails=config.report.report_from_emails,
@@ -396,6 +401,12 @@ def generate_report():
         
         # 获取邮件内容
         logger.info("开始获取邮件内容...")
+        logger.info(f"📬 当前配置的日报收集邮箱 (共{len(config.report.report_from_emails)}个):")
+        for i, email in enumerate(config.report.report_from_emails, 1):
+            logger.info(f"   {i}. {email}")
+        logger.info(f"🔍 搜索关键词: {config.report.report_subject_keywords}")
+        logger.info(f"📅 收集范围: 最近{config.report.collect_days}天内的邮件")
+        
         email_handler = EmailHandler(config.email)
         email_reports = email_handler.collect_reports(
             from_emails=config.report.report_from_emails,
@@ -649,14 +660,17 @@ def show_startup_info():
     print("   • 自动收集团队邮件并AI汇总")
     print("   • 可选自动发送给指定收件人")
     
-    print(f"\n📬 邮件收集配置:")
-    for email in config.report.report_from_emails:
-        print(f"   • {email}")
+    print(f"\n📬 邮件收集配置 (共{len(config.report.report_from_emails)}个邮箱):")
+    for i, email in enumerate(config.report.report_from_emails, 1):
+        print(f"   {i}. {email}")
+    
+    print(f"\n🔍 搜索关键词: {', '.join(config.report.report_subject_keywords)}")
+    print(f"📅 收集天数: {config.report.collect_days}天内的邮件")
     
     if config.report.report_recipients:
-        print(f"\n📤 自动发送给:")
-        for email in config.report.report_recipients:
-            print(f"   • {email}")
+        print(f"\n📤 自动发送给 (共{len(config.report.report_recipients)}个收件人):")
+        for i, email in enumerate(config.report.report_recipients, 1):
+            print(f"   {i}. {email}")
     else:
         print(f"\n📤 自动发送: 未配置收件人")
     
