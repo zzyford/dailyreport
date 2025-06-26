@@ -26,13 +26,9 @@ class ReportConfig(BaseModel):
     """日报配置"""
     report_time: str = "09:00"  # 发送时间
     collect_days: int = 1  # 收集几天内的邮件
-    report_subject_keywords: List[str] = ["日报","项目进度"]  # 只收集包含"日报"关键词的邮件
+    report_subject_keywords: List[str] = ["日报","项目进度"]  # 搜索关键词
     report_recipients: List[str]  # 日报接收人邮箱列表
-    report_from_emails: List[str] = [
-        "teammate@mailbox.com",
-        # 在这里添加新的团队成员邮箱，格式：
-        # "新成员邮箱@sunfield.mobi"
-    ]  # 需要收集日报的邮箱列表
+    report_from_emails: List[str]  # 需要收集日报的邮箱列表
 
 class Config:
     """全局配置"""
@@ -48,15 +44,13 @@ class Config:
             app_id=os.getenv("DASHSCOPE_APP_ID", "")
         )
         
-        # 处理日报配置
+        # 处理日报配置 - 完全依赖环境变量，不使用硬编码邮箱
         recipients = os.getenv("REPORT_RECIPIENTS", "")
         from_emails = os.getenv("REPORT_FROM_EMAILS", "")
         
         self.report = ReportConfig(
             report_recipients=recipients.split(",") if recipients else [],
-            report_from_emails=from_emails.split(",") if from_emails else [
-                "teammate@mailbox.com"
-            ],
+            report_from_emails=from_emails.split(",") if from_emails else [],
             report_time=os.getenv("REPORT_TIME", "09:00")
         )
 
