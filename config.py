@@ -29,10 +29,7 @@ class ReportConfig(BaseModel):
     report_subject_keywords: List[str] = ["日报","项目进度"]  # 只收集包含"日报"关键词的邮件
     report_recipients: List[str]  # 日报接收人邮箱列表
     report_from_emails: List[str] = [
-        "shaoyunfeng@sunfield.mobi",
-        "chenxi@sunfield.mobi", 
-        "xugenli@sunfield.mobi",
-        "zhaotianze@sunfield.mobi"
+        "teammate@mailbox.com",
         # 在这里添加新的团队成员邮箱，格式：
         # "新成员邮箱@sunfield.mobi"
     ]  # 需要收集日报的邮箱列表
@@ -58,10 +55,7 @@ class Config:
         self.report = ReportConfig(
             report_recipients=recipients.split(",") if recipients else [],
             report_from_emails=from_emails.split(",") if from_emails else [
-                "shaoyunfeng@sunfield.mobi",
-                "chenxi@sunfield.mobi", 
-                "xugenli@sunfield.mobi",
-                "zhaotianze@sunfield.mobi"
+                "teammate@mailbox.com"
             ],
             report_time=os.getenv("REPORT_TIME", "09:00")
         )

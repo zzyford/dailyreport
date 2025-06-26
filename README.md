@@ -112,11 +112,11 @@ python web_app.py
 
 ```env
 # 邮箱配置（必需）
-EMAIL_ADDRESS=zhangzhongyan@sunfield.mobi
+EMAIL_ADDRESS=mail@mailbox.com
 EMAIL_PASSWORD=your-password
-IMAP_SERVER=imap.sunfield.mobi
+IMAP_SERVER=imap.mailbox.com
 IMAP_PORT=993
-SMTP_SERVER=smtp.sunfield.mobi
+SMTP_SERVER=smtp.mailbox.com
 SMTP_PORT=465
 
 # AI配置（必需）
@@ -124,7 +124,7 @@ DASHSCOPE_API_KEY=sk-your-api-key
 DASHSCOPE_APP_ID=your-app-id
 
 # 日报收集配置
-TARGET_SENDERS=shaoyunfeng@sunfield.mobi,chenxi@sunfield.mobi,xugenli@sunfield.mobi
+TARGET_SENDERS=teammate@mailbox.com
 SUBJECT_KEYWORDS=日报
 REPORT_RECIPIENTS=boss@company.com
 
@@ -212,18 +212,6 @@ DATABASE_PATH=daily_reports.db
 ### ⚠️ 风险提示
 - 
 ```
-
-#### 表格模板
-```markdown
-## 数据统计表
-
-| 项目 | 一季度 | 二季度 | 三季度 | 四季度 | Total |
-|------|--------|--------|--------|--------|-------|
-| 产能 |        |        |        |        |       |
-| 发票 |        |        |        |        |       |
-| 回款 |        |        |        |        |       |
-```
-
 ### 定时任务管理
 
 #### 智能随机发送
