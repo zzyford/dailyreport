@@ -20,7 +20,7 @@ class AIConfig(BaseModel):
     api_key: str
     base_url: str = "https://dashscope.aliyuncs.com/api/v1/"
     app_id: str = ""  # 百炼平台应用ID
-    max_tokens: int = 2000
+    max_tokens: int = 200000
 
 class ReportConfig(BaseModel):
     """日报配置"""
@@ -38,10 +38,13 @@ class Config:
             password=os.getenv("EMAIL_PASSWORD", "")
         )
         
+        # 从环境变量读取 max_tokens，默认为 8000（支持多项目长输出）
+        max_tokens = int(os.getenv("DASHSCOPE_MAX_TOKENS", "80000"))
         self.ai = AIConfig(
             api_key=os.getenv("DASHSCOPE_API_KEY", ""),
             base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/api/v1/"),
-            app_id=os.getenv("DASHSCOPE_APP_ID", "")
+            app_id=os.getenv("DASHSCOPE_APP_ID", ""),
+            max_tokens=max_tokens
         )
         
         # 处理日报配置 - 完全依赖环境变量，不使用硬编码邮箱

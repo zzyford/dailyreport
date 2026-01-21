@@ -8,6 +8,7 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, R
 import sqlite3
 import os
 from datetime import datetime, date, timedelta
+from typing import Dict, List
 import json
 import logging
 import threading
@@ -80,6 +81,64 @@ def init_database():
         )
     ''')
     
+    # 创建项目原始内容表（存储每个项目的用户实际内容）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS project_raw_content (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            project_name TEXT NOT NULL,
+            raw_content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # 创建项目JSON数据表（存储由项目简报生成的JSON结构）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS project_json_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            project_name TEXT NOT NULL,
+            json_data TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # 创建项目结构化数据表（根据JSON结构拆成column）
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS project_structured_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            project_name TEXT NOT NULL,
+            project_stage TEXT,
+            health_status TEXT,
+            single_point_risk INTEGER DEFAULT 0,
+            main_risk TEXT,
+            key_events TEXT,
+            personnel TEXT,
+            role_gaps TEXT,
+            risk_signals TEXT,
+            tomorrow_expectation_check TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (report_id) REFERENCES generated_reports(id) ON DELETE CASCADE
+        )
+    ''')
+    
+    # 创建索引以提高查询性能
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_project_raw_content_report_id 
+        ON project_raw_content(report_id)
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_project_json_data_report_id 
+        ON project_json_data(report_id)
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_project_structured_data_report_id 
+        ON project_structured_data(report_id)
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -88,6 +147,76 @@ def get_db_connection():
     conn = sqlite3.connect(DATABASE)
     conn.row_factory = sqlite3.Row
     return conn
+
+def json_to_structured_data(json_data: Dict) -> Dict:
+    """将JSON数据转换为结构化数据（拆成column）"""
+    if not json_data or not isinstance(json_data, dict):
+        return {}
+    
+    structured = {}
+    
+    # 提取基本字段
+    structured['project_stage'] = json_data.get('project_stage', '')
+    structured['health_status'] = json_data.get('health_status', '')
+    structured['single_point_risk'] = 1 if json_data.get('single_point_risk', False) else 0
+    structured['main_risk'] = json_data.get('main_risk', '')
+    
+    # 将列表和字典转换为JSON字符串
+    structured['key_events'] = json.dumps(json_data.get('key_events', []), ensure_ascii=False)
+    structured['personnel'] = json.dumps(json_data.get('personnel', {}), ensure_ascii=False)
+    structured['role_gaps'] = json.dumps(json_data.get('role_gaps', []), ensure_ascii=False)
+    structured['risk_signals'] = json.dumps(json_data.get('risk_signals', {}), ensure_ascii=False)
+    structured['tomorrow_expectation_check'] = json.dumps(json_data.get('tomorrow_expectation_check', {}), ensure_ascii=False)
+    
+    return structured
+
+def save_project_data(conn, report_id: int, project_data_list: List[Dict]):
+    """保存项目数据到数据库"""
+    for project_data in project_data_list:
+        project_name = project_data.get('project_name', '未知项目')
+        raw_content = project_data.get('raw_content', '')
+        json_data = project_data.get('json_data')
+        raw_output = project_data.get('raw_output', '')
+        
+        # 保存项目原始内容
+        conn.execute(
+            'INSERT INTO project_raw_content (report_id, project_name, raw_content) VALUES (?, ?, ?)',
+            (report_id, project_name, raw_content)
+        )
+        
+        # 保存JSON数据
+        json_str = json.dumps(json_data, ensure_ascii=False) if json_data else json.dumps({}, ensure_ascii=False)
+        conn.execute(
+            'INSERT INTO project_json_data (report_id, project_name, json_data) VALUES (?, ?, ?)',
+            (report_id, project_name, json_str)
+        )
+        
+        # 保存结构化数据
+        if json_data:
+            structured = json_to_structured_data(json_data)
+            conn.execute(
+                '''INSERT INTO project_structured_data 
+                   (report_id, project_name, project_stage, health_status, single_point_risk, 
+                    main_risk, key_events, personnel, role_gaps, risk_signals, tomorrow_expectation_check) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (report_id, project_name,
+                 structured.get('project_stage', ''),
+                 structured.get('health_status', ''),
+                 structured.get('single_point_risk', 0),
+                 structured.get('main_risk', ''),
+                 structured.get('key_events', '[]'),
+                 structured.get('personnel', '{}'),
+                 structured.get('role_gaps', '[]'),
+                 structured.get('risk_signals', '{}'),
+                 structured.get('tomorrow_expectation_check', '{}'))
+            )
+        else:
+            # 即使没有JSON数据，也插入一条记录
+            conn.execute(
+                '''INSERT INTO project_structured_data 
+                   (report_id, project_name) VALUES (?, ?)''',
+                (report_id, project_name)
+            )
 
 def get_user_content_for_date(target_date: str) -> tuple:
     """
@@ -175,16 +304,26 @@ class BackgroundScheduler:
                 logger.info(f"团队邮件数量: {len(email_reports)}")
                 
                 ai_summarizer = AISummarizer(config.ai)
-                final_report = ai_summarizer.summarize_reports_separated(
+                result = ai_summarizer.summarize_reports_separated_with_data(
                     personal_content=user_content,
                     team_reports=email_reports if email_reports else []
                 )
+                final_report = result['report']
+                project_data_list = result.get('project_data', [])
+                
+                logger.info(f"提取到 {len(project_data_list)} 个项目数据")
                 
                 # 保存到数据库
-                conn.execute(
+                cursor = conn.execute(
                     'INSERT INTO generated_reports (date, user_content, email_content, final_report) VALUES (?, ?, ?, ?)',
                     (task_date, user_content, email_content, final_report)
                 )
+                report_id = cursor.lastrowid
+                
+                # 保存项目数据
+                if project_data_list:
+                    save_project_data(conn, report_id, project_data_list)
+                    logger.info(f"已保存 {len(project_data_list)} 个项目的关联数据")
                 
                 # 记录任务日志
                 conn.execute(
@@ -439,20 +578,30 @@ def generate_report():
         ai_start_time = time.time()
         
         ai_summarizer = AISummarizer(config.ai)
-        final_report = ai_summarizer.summarize_reports_separated(
+        result = ai_summarizer.summarize_reports_separated_with_data(
             personal_content=user_content,
             team_reports=email_reports if email_reports else []
         )
+        final_report = result['report']
+        project_data_list = result.get('project_data', [])
         
         ai_end_time = time.time()
         ai_duration = round(ai_end_time - ai_start_time, 2)
         logger.info(f"AI汇总完成，耗时: {ai_duration}秒")
+        logger.info(f"提取到 {len(project_data_list)} 个项目数据")
         
         # 保存生成的日报
-        conn.execute(
+        cursor = conn.execute(
             'INSERT INTO generated_reports (date, user_content, email_content, final_report) VALUES (?, ?, ?, ?)',
             (report_date, user_content, email_content, final_report)
         )
+        report_id = cursor.lastrowid
+        
+        # 保存项目数据
+        if project_data_list:
+            save_project_data(conn, report_id, project_data_list)
+            logger.info(f"已保存 {len(project_data_list)} 个项目的关联数据")
+        
         conn.commit()
         conn.close()
         
@@ -576,24 +725,34 @@ def generate_report_async():
             heartbeat_thread.start()
             
             ai_summarizer = AISummarizer(config.ai)
-            final_report = ai_summarizer.summarize_reports_separated(
+            result = ai_summarizer.summarize_reports_separated_with_data(
                 personal_content=user_content,
                 team_reports=email_reports if email_reports else []
             )
+            final_report = result['report']
+            project_data_list = result.get('project_data', [])
             
             heartbeat_active = False  # 停止心跳
             
             ai_end_time = time.time()
             ai_duration = round(ai_end_time - ai_start_time, 2)
             logger.info(f"AI汇总完成，耗时: {ai_duration}秒")
+            logger.info(f"提取到 {len(project_data_list)} 个项目数据")
             
             yield f"data: {json.dumps({'type': 'progress', 'message': f'AI汇总完成，耗时{ai_duration}秒'})}\n\n"
             
             # 保存生成的日报
-            conn.execute(
+            cursor = conn.execute(
                 'INSERT INTO generated_reports (date, user_content, email_content, final_report) VALUES (?, ?, ?, ?)',
                 (report_date, user_content, email_content, final_report)
             )
+            report_id = cursor.lastrowid
+            
+            # 保存项目数据
+            if project_data_list:
+                save_project_data(conn, report_id, project_data_list)
+                logger.info(f"已保存 {len(project_data_list)} 个项目的关联数据")
+            
             conn.commit()
             conn.close()
             

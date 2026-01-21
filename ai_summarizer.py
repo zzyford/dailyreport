@@ -56,6 +56,9 @@ class AISummarizer:
 dahai: MyCoach 客户
 Nicole: MyCoach 客户
 公司成员：
+张忠砚：MyCoach、金科、阿里国际项目的 PM
+娄总：售前
+老秦：产品经理
 左莹莹：产品经理
 修文强：web 开发
 刘俭俭：java 开发
@@ -167,6 +170,11 @@ Nicole: MyCoach 客户
     
     def summarize_reports_separated(self, personal_content: str, team_reports: List[Dict]) -> str:
         """分别处理个人日报和团队日报（每个人分别处理避免上下文过长）"""
+        result = self.summarize_reports_separated_with_data(personal_content, team_reports)
+        return result['report']
+    
+    def summarize_reports_separated_with_data(self, personal_content: str, team_reports: List[Dict]) -> Dict:
+        """分别处理个人日报和团队日报，并返回报告和项目数据"""
         try:
             logger.info(f"=== AI分离汇总处理开始 ===")
             logger.info(f"个人内容长度: {len(personal_content)} 字符")
@@ -174,44 +182,80 @@ Nicole: MyCoach 客户
             
             personal_summary = ""
             team_summary = ""
+            project_data_list = []  # 存储项目数据
             
             # 处理个人日报
             if personal_content.strip():
                 logger.info("=== 开始处理个人日报 ===")
-                personal_prompt = self.create_personal_summary_prompt(personal_content)
-                logger.info(f"个人日报提示词长度: {len(personal_prompt)} 字符")
                 
-                if self.config.app_id:
-                    logger.info("调用AI处理个人日报...")
-                    response = Application.call(
-                        api_key=self.config.api_key,
-                        app_id=self.config.app_id,
-                        prompt=personal_prompt,
-                        temperature=0.1
-                    )
-                    
-                    if response.status_code == HTTPStatus.OK:
-                        raw_output = response.output.text.strip()
-                        logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
-                        logger.info(f"AI原始输出预览: {raw_output[:300]}...")
-                        
-                        # 尝试解析JSON
-                        json_data = self._extract_json_from_text(raw_output)
-                        if json_data:
-                            logger.info("✅ 成功解析个人日报JSON数据")
-                            # 转换为报告格式
-                            personal_summary = self._convert_personal_json_to_report(json_data, raw_output)
-                            logger.info(f"✅ JSON转换为报告格式完成，报告长度: {len(personal_summary)} 字符")
-                        else:
-                            logger.warning("⚠️ 无法解析JSON，使用原始输出")
-                            personal_summary = raw_output
-                        
-                        logger.info("个人日报AI汇总完成")
-                    else:
-                        logger.error(f"个人日报AI调用失败: {response.status_code}")
-                        personal_summary = self.create_simple_personal_summary(personal_content)
+                # 检测是否包含多个项目（通过【项目】标记）
+                projects = self._extract_projects_from_content(personal_content)
+                
+                if len(projects) > 1:
+                    # 多项目：分段处理，避免输出过长被截断
+                    logger.info(f"检测到 {len(projects)} 个项目，采用分段处理方式")
+                    result = self._process_personal_reports_by_project_with_data(projects)
+                    personal_summary = result['summary']
+                    project_data_list.extend(result['project_data'])
                 else:
-                    personal_summary = self.create_simple_personal_summary(personal_content)
+                    # 单项目：直接处理
+                    logger.info("单项目处理模式")
+                    project_name = projects[0]['name'] if projects else '默认项目'
+                    project_content = projects[0]['content'] if projects else personal_content
+                    
+                    personal_prompt = self.create_personal_summary_prompt(project_content)
+                    logger.info(f"个人日报提示词长度: {len(personal_prompt)} 字符")
+                    
+                    if self.config.app_id:
+                        logger.info("调用AI处理个人日报...")
+                        # Application.call 不支持 max_tokens 参数，需要在百炼控制台的应用设置中配置
+                        response = Application.call(
+                            api_key=self.config.api_key,
+                            app_id=self.config.app_id,
+                            prompt=personal_prompt,
+                            temperature=0.1
+                        )
+                        
+                        if response.status_code == HTTPStatus.OK:
+                            raw_output = response.output.text.strip()
+                            logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
+                            logger.info(f"AI原始输出预览1: {raw_output[:500]}...")
+                            
+                            # 检查输出是否完整（检查JSON是否闭合）
+                            if not self._is_json_complete(raw_output):
+                                logger.warning("⚠️ 检测到输出可能被截断，尝试修复...")
+                            
+                            # 尝试解析JSON
+                            json_data = self._extract_json_from_text(raw_output)
+                            if json_data:
+                                logger.info("✅ 成功解析个人日报JSON数据")
+                                # 转换为报告格式
+                                personal_summary = self._convert_personal_json_to_report(json_data, raw_output)
+                                logger.info(f"✅ JSON转换为报告格式完成，报告长度: {len(personal_summary)} 字符")
+                                
+                                # 保存项目数据
+                                project_data_list.append({
+                                    'project_name': project_name,
+                                    'raw_content': project_content,
+                                    'json_data': json_data,
+                                    'raw_output': raw_output
+                                })
+                            else:
+                                logger.warning("⚠️ 无法解析JSON，使用原始输出")
+                                personal_summary = raw_output
+                            
+                            logger.info("个人日报AI汇总完成")
+                        else:
+                            error_msg = f"个人日报AI调用失败: {response.status_code}"
+                            if hasattr(response, 'message'):
+                                error_msg += f", 错误信息: {response.message}"
+                            logger.error(error_msg)
+                            # 如果是400错误，可能是参数问题，记录详细错误
+                            if response.status_code == 400:
+                                logger.error("提示：Application.call 不支持 max_tokens 参数，请在百炼控制台的应用设置中配置输出长度")
+                            personal_summary = self.create_simple_personal_summary(personal_content)
+                    else:
+                        personal_summary = self.create_simple_personal_summary(personal_content)
             
             # 处理团队日报 - 分别处理每个人的日报
             if team_reports:
@@ -224,12 +268,227 @@ Nicole: MyCoach 客户
             logger.info("=== AI分离汇总处理完成 ===")
             logger.info(f"最终报告长度: {len(final_report)} 字符")
             
-            return final_report
+            return {
+                'report': final_report,
+                'project_data': project_data_list
+            }
             
         except Exception as e:
             logger.error(f"AI分离汇总失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # 返回简单的汇总作为备选
-            return self.create_fallback_summary(personal_content, team_reports)
+            fallback_report = self.create_fallback_summary(personal_content, team_reports)
+            return {
+                'report': fallback_report,
+                'project_data': []
+            }
+    
+    def _extract_projects_from_content(self, content: str) -> List[Dict[str, str]]:
+        """从个人日报内容中提取项目列表"""
+        projects = []
+        # 匹配【项目】：项目名称 的模式
+        pattern = r'【项目】[：:]\s*([^\n]+)'
+        matches = re.finditer(pattern, content)
+        
+        for match in matches:
+            project_name = match.group(1).strip()
+            # 找到下一个项目或内容结尾的位置
+            start_pos = match.end()
+            next_match = re.search(r'【项目】[：:]', content[start_pos:])
+            if next_match:
+                end_pos = start_pos + next_match.start()
+            else:
+                end_pos = len(content)
+            
+            project_content = content[start_pos:end_pos].strip()
+            if project_content:
+                projects.append({
+                    'name': project_name,
+                    'content': project_content
+                })
+        
+        # 如果没有找到项目标记，返回整个内容作为一个项目
+        if not projects:
+            projects.append({
+                'name': '默认项目',
+                'content': content
+            })
+        
+        return projects
+    
+    def _process_personal_reports_by_project(self, projects: List[Dict[str, str]]) -> str:
+        """按项目分段处理个人日报，避免输出过长被截断"""
+        result = self._process_personal_reports_by_project_with_data(projects)
+        return result['summary']
+    
+    def _process_personal_reports_by_project_with_data(self, projects: List[Dict[str, str]]) -> Dict:
+        """按项目分段处理个人日报，返回摘要和项目数据"""
+        all_project_results = {}
+        project_data_list = []
+        
+        for i, project in enumerate(projects, 1):
+            project_name = project['name']
+            project_content = project['content']
+            
+            logger.info(f"处理第 {i}/{len(projects)} 个项目: {project_name}")
+            logger.info(f"项目内容长度: {len(project_content)} 字符")
+            
+            # 为单个项目创建提示词
+            project_prompt = self.create_personal_summary_prompt(project_content)
+            
+            if self.config.app_id:
+                try:
+                    response = Application.call(
+                        api_key=self.config.api_key,
+                        app_id=self.config.app_id,
+                        prompt=project_prompt,
+                        temperature=0.1
+                    )
+                    
+                    if response.status_code == HTTPStatus.OK:
+                        raw_output = response.output.text.strip()
+                        logger.info(f"项目 {project_name} AI输出长度: {len(raw_output)} 字符")
+                        
+                        # 检查输出是否完整
+                        if not self._is_json_complete(raw_output):
+                            logger.warning(f"⚠️ 项目 {project_name} 的输出可能被截断")
+                        
+                        # 解析JSON
+                        json_data = self._extract_json_from_text(raw_output)
+                        if json_data:
+                            # 如果是多项目格式，提取当前项目的数据
+                            if isinstance(json_data.get("project_stage"), dict):
+                                # 多项目格式，提取当前项目
+                                project_data = {
+                                    "project_stage": json_data.get("project_stage", {}).get(project_name, "unknown"),
+                                    "key_events": json_data.get("key_events", {}).get(project_name, []),
+                                    "personnel": json_data.get("personnel", {}).get(project_name, {}),
+                                    "role_gaps": json_data.get("role_gaps", {}).get(project_name, []),
+                                    "single_point_risk": json_data.get("single_point_risk", {}).get(project_name, False) if isinstance(json_data.get("single_point_risk"), dict) else False,
+                                    "health_status": json_data.get("health_status", {}).get(project_name, "unknown"),
+                                    "risk_signals": json_data.get("risk_signals", {}).get(project_name, {}),
+                                    "main_risk": json_data.get("main_risk", {}).get(project_name, "") if isinstance(json_data.get("main_risk"), dict) else "",
+                                    "tomorrow_expectation_check": json_data.get("tomorrow_expectation_check", {}).get(project_name, {})
+                                }
+                            else:
+                                # 单项目格式，直接使用
+                                project_data = json_data
+                            
+                            all_project_results[project_name] = project_data
+                            
+                            # 保存项目数据
+                            project_data_list.append({
+                                'project_name': project_name,
+                                'raw_content': project_content,
+                                'json_data': project_data,
+                                'raw_output': raw_output
+                            })
+                            
+                            logger.info(f"✅ 项目 {project_name} 处理完成")
+                        else:
+                            logger.warning(f"⚠️ 项目 {project_name} JSON解析失败，使用原始输出")
+                            all_project_results[project_name] = {"raw_output": raw_output}
+                            
+                            # 即使JSON解析失败，也保存原始数据
+                            project_data_list.append({
+                                'project_name': project_name,
+                                'raw_content': project_content,
+                                'json_data': None,
+                                'raw_output': raw_output
+                            })
+                    else:
+                        logger.error(f"项目 {project_name} AI调用失败: {response.status_code}")
+                        all_project_results[project_name] = {"error": f"调用失败: {response.status_code}"}
+                except Exception as e:
+                    logger.error(f"处理项目 {project_name} 时出错: {e}")
+                    all_project_results[project_name] = {"error": str(e)}
+        
+        # 合并所有项目的结果为多项目格式
+        if all_project_results:
+            merged_json = self._merge_project_results(all_project_results)
+            summary = self._convert_personal_json_to_report(merged_json, "")
+            return {
+                'summary': summary,
+                'project_data': project_data_list
+            }
+        else:
+            return {
+                'summary': "所有项目处理失败",
+                'project_data': []
+            }
+    
+    def _merge_project_results(self, project_results: Dict[str, Dict]) -> Dict:
+        """合并多个项目的处理结果"""
+        merged = {
+            "project_stage": {},
+            "key_events": {},
+            "personnel": {},
+            "role_gaps": {},
+            "single_point_risk": {},
+            "health_status": {},
+            "risk_signals": {},
+            "main_risk": {},
+            "tomorrow_expectation_check": {}
+        }
+        
+        for project_name, data in project_results.items():
+            if "error" in data or "raw_output" in data:
+                # 跳过错误或原始输出
+                continue
+            
+            merged["project_stage"][project_name] = data.get("project_stage", "unknown")
+            merged["key_events"][project_name] = data.get("key_events", [])
+            merged["personnel"][project_name] = data.get("personnel", {})
+            merged["role_gaps"][project_name] = data.get("role_gaps", [])
+            merged["single_point_risk"][project_name] = data.get("single_point_risk", False)
+            merged["health_status"][project_name] = data.get("health_status", "unknown")
+            merged["risk_signals"][project_name] = data.get("risk_signals", {})
+            merged["main_risk"][project_name] = data.get("main_risk", "")
+            merged["tomorrow_expectation_check"][project_name] = data.get("tomorrow_expectation_check", {})
+        
+        return merged
+    
+    def _is_json_complete(self, text: str) -> bool:
+        """检查JSON是否完整（简单的括号匹配检查）"""
+        # 查找第一个 { 和最后一个 }
+        start_idx = text.find('{')
+        if start_idx == -1:
+            return False
+        
+        # 统计括号匹配
+        brace_count = 0
+        bracket_count = 0
+        in_string = False
+        escape_next = False
+        
+        for i in range(start_idx, len(text)):
+            char = text[i]
+            
+            if escape_next:
+                escape_next = False
+                continue
+            
+            if char == '\\':
+                escape_next = True
+                continue
+            
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            
+            if not in_string:
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                elif char == '[':
+                    bracket_count += 1
+                elif char == ']':
+                    bracket_count -= 1
+        
+        # 如果括号都匹配，说明JSON可能完整
+        return brace_count == 0 and bracket_count == 0
     
     def process_team_reports_individually(self, team_reports: List[Dict]) -> str:
         """两阶段处理：先分别处理每个人的日报，再整体整合"""
@@ -251,6 +510,7 @@ Nicole: MyCoach 客户
                 
                 if self.config.app_id:
                     logger.info(f"调用AI处理第 {i} 份日报...")
+                    # Application.call 不支持 max_tokens 参数，需要在百炼控制台的应用设置中配置
                     response = Application.call(
                         api_key=self.config.api_key,
                         app_id=self.config.app_id,
@@ -261,7 +521,7 @@ Nicole: MyCoach 客户
                     if response.status_code == HTTPStatus.OK:
                         raw_output = response.output.text.strip()
                         logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
-                        logger.info(f"AI原始输出预览: {raw_output[:300]}...")
+                        logger.info(f"AI原始输出预览2: {raw_output}...")
                         
                         # 尝试解析JSON
                         json_data = self._extract_json_from_text(raw_output)
@@ -426,6 +686,7 @@ Nicole: MyCoach 客户
             
             if self.config.app_id:
                 logger.info("调用AI进行团队汇总整合...")
+                # Application.call 不支持 max_tokens 参数，需要在百炼控制台的应用设置中配置
                 response = Application.call(
                     api_key=self.config.api_key,
                     app_id=self.config.app_id,
@@ -587,7 +848,7 @@ Nicole: MyCoach 客户
         return text.strip()
     
     def _extract_json_from_text(self, text: str) -> Optional[Dict]:
-        """从文本中提取JSON内容"""
+        """从文本中提取JSON内容（支持处理被截断的JSON）"""
         try:
             # 尝试直接解析整个文本
             return json.loads(text)
@@ -601,8 +862,15 @@ Nicole: MyCoach 客户
                 json_str = text[start_idx:end_idx + 1]
                 try:
                     return json.loads(json_str)
-                except json.JSONDecodeError:
-                    pass
+                except json.JSONDecodeError as e:
+                    # JSON可能被截断，尝试修复
+                    logger.warning(f"JSON解析失败，尝试修复截断的JSON: {e}")
+                    fixed_json = self._try_fix_truncated_json(json_str)
+                    if fixed_json:
+                        try:
+                            return json.loads(fixed_json)
+                        except json.JSONDecodeError:
+                            pass
             
             # 尝试查找代码块中的JSON
             json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
@@ -613,7 +881,60 @@ Nicole: MyCoach 客户
                 except json.JSONDecodeError:
                     pass
             
+            # 如果都失败了，尝试从第一个 { 开始提取，即使没有闭合
+            if start_idx != -1:
+                # 尝试找到最后一个可能的闭合位置
+                json_str = text[start_idx:]
+                fixed_json = self._try_fix_truncated_json(json_str)
+                if fixed_json:
+                    try:
+                        return json.loads(fixed_json)
+                    except json.JSONDecodeError:
+                        pass
+            
             logger.warning("无法从AI输出中提取有效的JSON")
+            logger.warning(f"原始输出长度: {len(text)} 字符")
+            logger.warning(f"原始输出末尾100字符: {text[-100:]}")
+            return None
+    
+    def _try_fix_truncated_json(self, json_str: str) -> Optional[str]:
+        """尝试修复被截断的JSON"""
+        try:
+            # 统计括号和引号的匹配情况
+            open_braces = json_str.count('{')
+            close_braces = json_str.count('}')
+            open_brackets = json_str.count('[')
+            close_brackets = json_str.count(']')
+            
+            # 如果缺少闭合括号，尝试添加
+            fixed = json_str
+            missing_braces = open_braces - close_braces
+            missing_brackets = open_brackets - close_brackets
+            
+            # 检查是否在字符串中间被截断（引号未闭合）
+            # 简单检查：如果最后一个字符不是 } 或 ]，可能被截断
+            if fixed and fixed[-1] not in ['}', ']', '"', "'"]:
+                # 移除可能未完成的最后一个键值对
+                # 查找最后一个完整的键值对
+                last_comma = fixed.rfind(',')
+                if last_comma != -1:
+                    # 检查最后一个逗号后面是否有完整的键值对
+                    after_comma = fixed[last_comma + 1:].strip()
+                    if not after_comma or (':' not in after_comma and not after_comma.startswith('"')):
+                        # 移除最后一个不完整的键值对
+                        fixed = fixed[:last_comma]
+            
+            # 添加缺失的闭合括号
+            if missing_brackets > 0:
+                fixed += ']' * missing_brackets
+            if missing_braces > 0:
+                fixed += '}' * missing_braces
+            
+            # 如果修复后仍然无法解析，返回None
+            return fixed if fixed != json_str else None
+            
+        except Exception as e:
+            logger.warning(f"修复JSON时出错: {e}")
             return None
     
     def _convert_personal_json_to_report(self, json_data: Dict, original_summary: str = "") -> str:
@@ -630,103 +951,232 @@ Nicole: MyCoach 客户
                 return f"# 个人工作总结\n\n{original_summary}"
             return "# 个人工作总结\n\n（JSON解析失败，使用原始内容）"
     
-    def _convert_json_to_report(self, json_data: Dict, original_summary: str = "") -> str:
-        """将JSON分析结果转换为可读的报告格式"""
-        try:
-            report = "**项目分析报告：**\n\n"
-            
-            # 一、事实抽取
-            report += "**一、事实抽取**\n"
-            project_stage = json_data.get("project_stage", "unknown")
-            report += f"- 当前项目阶段：{project_stage}\n"
-            
-            key_events = json_data.get("key_events", [])
-            if key_events:
-                report += "- 今日关键事件：\n"
-                for event in key_events:
-                    report += f"  • {event}\n"
-            else:
-                report += "- 今日关键事件：无\n"
-            
-            personnel = json_data.get("personnel", {})
-            if personnel:
-                report += "- 人员投入情况：\n"
-                for role, info in personnel.items():
-                    if isinstance(info, dict):
-                        work_type = info.get("work_type", "未知")
-                        load_status = info.get("load_status", "未知")
-                        report += f"  • {role}：{work_type}（{load_status}）\n"
-            else:
-                report += "- 人员投入情况：无相关信息\n"
-            
-            # 二、人力占用与饱和度
-            report += "\n**二、人力占用分析**\n"
-            role_gaps = json_data.get("role_gaps", [])
-            if role_gaps:
-                report += "- 角色缺位：\n"
-                for gap in role_gaps:
-                    report += f"  • {gap}\n"
-            else:
-                report += "- 角色缺位：无\n"
-            
-            single_point_risk = json_data.get("single_point_risk", False)
-            report += f"- 单点风险：{'是' if single_point_risk else '否'}\n"
-            
-            # 三、项目态势判断
-            report += "\n**三、项目态势判断**\n"
-            health_status = json_data.get("health_status", "unknown")
-            status_map = {
-                "green": "🟢 健康",
-                "yellow": "🟡 需关注",
-                "red": "🔴 有风险",
-                "unknown": "❓ 不确定"
+    def _convert_single_project_json(self, project_name: str, project_data: Dict) -> str:
+        """转换单个项目的JSON数据为报告格式（project_data已经是扁平化的单个项目数据）"""
+        report = f"### 【{project_name}】\n\n"
+        
+        # 一、事实抽取
+        report += "**一、事实抽取**\n"
+        project_stage = project_data.get("project_stage", "unknown")
+        report += f"- 当前项目阶段：{project_stage}\n"
+        
+        key_events = project_data.get("key_events", [])
+        if key_events:
+            report += "- 今日关键事件：\n"
+            for event in key_events:
+                report += f"  • {event}\n"
+        else:
+            report += "- 今日关键事件：无\n"
+        
+        personnel = project_data.get("personnel", {})
+        if personnel and isinstance(personnel, dict):
+            report += "- 人员投入情况：\n"
+            for person_name, info in personnel.items():
+                if isinstance(info, dict):
+                    role = info.get("role", "未知")
+                    work_type = info.get("work_type", "未知")
+                    load_status = info.get("load_status", "未知")
+                    report += f"  • {person_name}（{role}）：{work_type}（{load_status}）\n"
+        else:
+            report += "- 人员投入情况：无相关信息\n"
+        
+        # 二、人力占用与饱和度
+        report += "\n**二、人力占用分析**\n"
+        role_gaps = project_data.get("role_gaps", [])
+        if role_gaps:
+            report += "- 角色缺位：\n"
+            for gap in role_gaps:
+                report += f"  • {gap}\n"
+        else:
+            report += "- 角色缺位：无\n"
+        
+        single_point_risk = project_data.get("single_point_risk", False)
+        report += f"- 单点风险：{'是' if single_point_risk else '否'}\n"
+        
+        # 三、项目态势判断
+        report += "\n**三、项目态势判断**\n"
+        health_status = project_data.get("health_status", "unknown")
+        status_map = {
+            "green": "🟢 健康",
+            "yellow": "🟡 需关注",
+            "red": "🔴 有风险",
+            "unknown": "❓ 不确定"
+        }
+        report += f"- 项目健康度：{status_map.get(health_status, health_status)}\n"
+        
+        risk_signals = project_data.get("risk_signals", {})
+        if risk_signals and isinstance(risk_signals, dict):
+            report += "- 风险信号：\n"
+            signal_map = {
+                "fake_progress": "假推进",
+                "delay_risk": "隐性延期风险",
+                "requirement_unstable": "需求或决策不稳定",
+                "external_block": "外部依赖阻塞"
             }
-            report += f"- 项目健康度：{status_map.get(health_status, health_status)}\n"
+            for key, desc in signal_map.items():
+                value = risk_signals.get(key, "不确定")
+                if isinstance(value, bool):
+                    value = "是" if value else "否"
+                report += f"  • {desc}：{value}\n"
+        
+        main_risk = project_data.get("main_risk", "")
+        if main_risk:
+            report += f"- 主要风险：{main_risk}\n"
+        else:
+            report += "- 主要风险：无\n"
+        
+        # 四、短期预期一致性检查
+        report += "\n**四、短期预期检查**\n"
+        expectation_check = project_data.get("tomorrow_expectation_check", {})
+        if expectation_check and isinstance(expectation_check, dict):
+            reasonable = expectation_check.get("reasonable", True)
+            report += f"- 预期合理性：{'合理' if reasonable else '存在偏差'}\n"
             
-            risk_signals = json_data.get("risk_signals", {})
-            if risk_signals:
-                report += "- 风险信号：\n"
-                signal_map = {
-                    "fake_progress": "假推进",
-                    "delay_risk": "隐性延期风险",
-                    "requirement_unstable": "需求或决策不稳定",
-                    "external_block": "外部依赖阻塞"
+            optimistic_bias = expectation_check.get("optimistic_bias", False)
+            if optimistic_bias:
+                report += "- 乐观偏差：是\n"
+            
+            missing_prerequisites = expectation_check.get("missing_prerequisites", [])
+            if missing_prerequisites:
+                report += "- 缺失前置条件：\n"
+                for pre in missing_prerequisites:
+                    report += f"  • {pre}\n"
+        else:
+            report += "- 预期合理性：无法判断\n"
+        
+        return report
+    
+    def _convert_json_to_report(self, json_data: Dict, original_summary: str = "") -> str:
+        """将JSON分析结果转换为可读的报告格式（支持单项目和多项目格式）"""
+        try:
+            # 检测是否为多项目格式
+            project_stage = json_data.get("project_stage", "unknown")
+            is_multi_project = isinstance(project_stage, dict)
+            
+            if is_multi_project:
+                # 多项目格式：按项目分别处理
+                logger.info(f"检测到多项目格式，项目数量: {len(project_stage)}")
+                report = "**项目分析报告（多项目）：**\n\n"
+                
+                # 按项目名称排序，确保输出顺序一致
+                project_names = sorted(project_stage.keys())
+                
+                for project_name in project_names:
+                    # 为每个项目构建项目数据
+                    project_data = {
+                        "project_stage": project_stage.get(project_name, "unknown"),
+                        "key_events": json_data.get("key_events", {}).get(project_name, []) if isinstance(json_data.get("key_events"), dict) else [],
+                        "personnel": json_data.get("personnel", {}).get(project_name, {}) if isinstance(json_data.get("personnel"), dict) else {},
+                        "role_gaps": json_data.get("role_gaps", {}).get(project_name, []) if isinstance(json_data.get("role_gaps"), dict) else [],
+                        "single_point_risk": json_data.get("single_point_risk", {}).get(project_name, False) if isinstance(json_data.get("single_point_risk"), dict) else False,
+                        "health_status": json_data.get("health_status", {}).get(project_name, "unknown") if isinstance(json_data.get("health_status"), dict) else "unknown",
+                        "risk_signals": json_data.get("risk_signals", {}).get(project_name, {}) if isinstance(json_data.get("risk_signals"), dict) else {},
+                        "main_risk": json_data.get("main_risk", {}).get(project_name, "") if isinstance(json_data.get("main_risk"), dict) else "",
+                        "tomorrow_expectation_check": json_data.get("tomorrow_expectation_check", {}).get(project_name, {}) if isinstance(json_data.get("tomorrow_expectation_check"), dict) else {}
+                    }
+                    
+                    # 转换单个项目
+                    project_report = self._convert_single_project_json(project_name, project_data)
+                    report += project_report + "\n\n"
+                
+                return report
+            else:
+                # 单项目格式：使用原有逻辑
+                report = "**项目分析报告：**\n\n"
+                
+                # 一、事实抽取
+                report += "**一、事实抽取**\n"
+                report += f"- 当前项目阶段：{project_stage}\n"
+                
+                key_events = json_data.get("key_events", [])
+                if key_events:
+                    report += "- 今日关键事件：\n"
+                    for event in key_events:
+                        report += f"  • {event}\n"
+                else:
+                    report += "- 今日关键事件：无\n"
+                
+                personnel = json_data.get("personnel", {})
+                if personnel:
+                    report += "- 人员投入情况：\n"
+                    for role, info in personnel.items():
+                        if isinstance(info, dict):
+                            work_type = info.get("work_type", "未知")
+                            load_status = info.get("load_status", "未知")
+                            report += f"  • {role}：{work_type}（{load_status}）\n"
+                else:
+                    report += "- 人员投入情况：无相关信息\n"
+                
+                # 二、人力占用与饱和度
+                report += "\n**二、人力占用分析**\n"
+                role_gaps = json_data.get("role_gaps", [])
+                if role_gaps:
+                    report += "- 角色缺位：\n"
+                    for gap in role_gaps:
+                        report += f"  • {gap}\n"
+                else:
+                    report += "- 角色缺位：无\n"
+                
+                single_point_risk = json_data.get("single_point_risk", False)
+                report += f"- 单点风险：{'是' if single_point_risk else '否'}\n"
+                
+                # 三、项目态势判断
+                report += "\n**三、项目态势判断**\n"
+                health_status = json_data.get("health_status", "unknown")
+                status_map = {
+                    "green": "🟢 健康",
+                    "yellow": "🟡 需关注",
+                    "red": "🔴 有风险",
+                    "unknown": "❓ 不确定"
                 }
-                for key, desc in signal_map.items():
-                    value = risk_signals.get(key, "不确定")
-                    if isinstance(value, bool):
-                        value = "是" if value else "否"
-                    report += f"  • {desc}：{value}\n"
-            
-            main_risk = json_data.get("main_risk", "")
-            if main_risk:
-                report += f"- 主要风险：{main_risk}\n"
-            else:
-                report += "- 主要风险：无\n"
-            
-            # 四、短期预期一致性检查
-            report += "\n**四、短期预期检查**\n"
-            expectation_check = json_data.get("tomorrow_expectation_check", {})
-            if expectation_check:
-                reasonable = expectation_check.get("reasonable", True)
-                report += f"- 预期合理性：{'合理' if reasonable else '存在偏差'}\n"
+                report += f"- 项目健康度：{status_map.get(health_status, health_status)}\n"
                 
-                optimistic_bias = expectation_check.get("optimistic_bias", False)
-                if optimistic_bias:
-                    report += "- 乐观偏差：是\n"
+                risk_signals = json_data.get("risk_signals", {})
+                if risk_signals:
+                    report += "- 风险信号：\n"
+                    signal_map = {
+                        "fake_progress": "假推进",
+                        "delay_risk": "隐性延期风险",
+                        "requirement_unstable": "需求或决策不稳定",
+                        "external_block": "外部依赖阻塞"
+                    }
+                    for key, desc in signal_map.items():
+                        value = risk_signals.get(key, "不确定")
+                        if isinstance(value, bool):
+                            value = "是" if value else "否"
+                        report += f"  • {desc}：{value}\n"
                 
-                missing_prerequisites = expectation_check.get("missing_prerequisites", [])
-                if missing_prerequisites:
-                    report += "- 缺失前置条件：\n"
-                    for pre in missing_prerequisites:
-                        report += f"  • {pre}\n"
-            else:
-                report += "- 预期合理性：无法判断\n"
-            
-            return report
+                main_risk = json_data.get("main_risk", "")
+                if main_risk:
+                    report += f"- 主要风险：{main_risk}\n"
+                else:
+                    report += "- 主要风险：无\n"
+                
+                # 四、短期预期一致性检查
+                report += "\n**四、短期预期检查**\n"
+                expectation_check = json_data.get("tomorrow_expectation_check", {})
+                if expectation_check:
+                    reasonable = expectation_check.get("reasonable", True)
+                    report += f"- 预期合理性：{'合理' if reasonable else '存在偏差'}\n"
+                    
+                    optimistic_bias = expectation_check.get("optimistic_bias", False)
+                    if optimistic_bias:
+                        report += "- 乐观偏差：是\n"
+                    
+                    missing_prerequisites = expectation_check.get("missing_prerequisites", [])
+                    if missing_prerequisites:
+                        report += "- 缺失前置条件：\n"
+                        for pre in missing_prerequisites:
+                            report += f"  • {pre}\n"
+                else:
+                    report += "- 预期合理性：无法判断\n"
+                
+                return report
             
         except Exception as e:
             logger.error(f"转换JSON到报告格式时出错: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             # 如果转换失败，返回原始摘要或简单格式
             if original_summary:
                 return f"**项目分析报告：**\n\n{original_summary}"
