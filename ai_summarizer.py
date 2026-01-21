@@ -1,5 +1,7 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
+import json
+import re
 from http import HTTPStatus
 from dashscope import Application
 from loguru import logger
@@ -25,37 +27,110 @@ class AISummarizer:
         return formatted_text
     
     def create_personal_summary_prompt(self, personal_content: str) -> str:
-        """创建个人日报汇总提示词"""
-        prompt = f"""
-你是一名团队管理者，需要向老板汇报工作。请根据以下个人工作日报内容，按照固定格式生成客观、简练的工作汇报：
+        """创建个人日报汇总提示词（使用与团队日报相同的结构化分析方式）"""
+        # 系统提示词（与 create_single_team_report_prompt 相同）
+        system_prompt = """你是一名资深项目管理分析助手（AI PM Analyst），擅长从项目经理的每日汇报中，
+抽取结构化事实、判断项目态势、识别人员负载与潜在风险。
 
-个人工作日报内容：
+你的目标不是复述日报内容，而是：
+- 还原项目真实进展状态
+- 识别隐含的人力占用结构
+- 判断项目是否存在延期、风险或假推进信号
+- 给出偏保守、可解释的分析结论
+
+如果信息不足，请明确标注"不确定"，不要自行脑补。"""
+        
+        # 用户提示词（与 create_single_team_report_prompt 相同，但适配个人日报格式）
+        user_prompt = f"""以下是一名团队管理者的个人工作日报，内容采用固定输入模式：
+
+【项目】：<项目名称>
+
+1. 今天项目发生了什么关键变化？
+2. 今天主要消耗人力在什么事情上？
+3. 有什么让我不安心的地方？
+4. 明天如果一切顺利，项目应该到什么状态？
+
+日报内容：
 {personal_content}
+客户相关人员：
+dahai: MyCoach 客户
+Nicole: MyCoach 客户
+公司成员：
+左莹莹：产品经理
+修文强：web 开发
+刘俭俭：java 开发
+请你完成以下分析任务，并严格按 JSON 结构输出。
 
-请严格按照以下格式生成汇报：
+【分析任务】
 
-# 1. 产能情况
-如果日报中包含季度产能数据，请按以下格式汇报：
-本季度团队整体产能为 X 元（不含税，不含服务器成本）。
+一、事实抽取（不做判断）
+- 当前项目阶段（需求 / 设计 / 开发 / 联调 / 测试 / 验收 / 不确定）
+- 今日关键事件列表（推进 / 卡点 / 决策 / 客户反馈）
+- 明确提及的人员及其角色（如：研发 / 产品 / 测试 / PM）
+- 每个角色今天主要投入的工作类型
 
-季度已开票金额（含税）为 X 元。
-季度未开票金额（含税）为 X 元。
+二、人力占用与饱和度推断（基于内容信号，而非精确工时）
+- 对每个被提及的角色，判断其当前占用状态：
+  - 高负载（持续核心产出 / 被多个事项牵引）
+  - 中等负载
+  - 低负载 / 等待中
+- 判断是否存在角色缺位（某阶段本应出现但未出现的角色）
+- 判断是否存在单点风险（关键事项集中在少数人）
 
-如果没有产能数据，则写：本次汇报无产能相关数据。
+三、项目态势判断
+- 项目整体健康度：green / yellow / red / unknown
+- 是否存在以下信号（是 / 否 / 不确定）：
+  - 假推进（人很忙但交付未逼近）
+  - 隐性延期风险
+  - 需求或决策不稳定
+  - 外部依赖阻塞（客户 / 第三方）
+- 当前最主要的风险描述（一句话）
 
-# 2. 今日工作内容
-今日主要完成了以下工作：
+四、短期预期一致性检查
+- "明天如果一切顺利的状态"是否合理？
+- 是否存在明显乐观偏差或前置条件未满足？
 
-[按项目或任务逐条列出，格式为：项目名称：具体完成的工作内容。]
+【输出要求】
 
-要求：
-- 你是团队管理者，向老板汇报工作
-- 语言客观、简练，不要有任何主观解读
-- 完全基于原始内容进行客观阐述
-- 不要添加评价性词汇或主观判断
-- 严格按照提供的格式输出
-- 如果某部分内容不存在，明确说明"无相关数据"或"无相关内容"
-"""
+- 仅输出 JSON，不要输出解释性文字
+- 所有判断必须能从原文找到依据
+- 若无法判断，请使用 "unknown" 或 "insufficient_information"
+- JSON 格式示例：
+{{
+  "project_stage": "开发",
+  "key_events": ["推进：完成了XX功能开发", "卡点：等待第三方接口"],
+  "personnel": {{
+    "研发": {{
+      "work_type": "功能开发",
+      "load_status": "高负载"
+    }},
+    "测试": {{
+      "work_type": "等待中",
+      "load_status": "低负载"
+    }}
+  }},
+  "role_gaps": ["缺少产品角色参与"],
+  "single_point_risk": false,
+  "health_status": "yellow",
+  "risk_signals": {{
+    "fake_progress": false,
+    "delay_risk": true,
+    "requirement_unstable": false,
+    "external_block": true
+  }},
+  "main_risk": "等待第三方接口可能导致延期",
+  "tomorrow_expectation_check": {{
+    "reasonable": false,
+    "optimistic_bias": true,
+    "missing_prerequisites": ["第三方接口未就绪"]
+  }}
+}}"""
+        
+        # 组合系统提示词和用户提示词
+        prompt = f"""{system_prompt}
+
+{user_prompt}"""
+        
         return prompt
     
     def create_team_summary_prompt(self, team_reports: str) -> str:
@@ -107,6 +182,7 @@ class AISummarizer:
                 logger.info(f"个人日报提示词长度: {len(personal_prompt)} 字符")
                 
                 if self.config.app_id:
+                    logger.info("调用AI处理个人日报...")
                     response = Application.call(
                         api_key=self.config.api_key,
                         app_id=self.config.app_id,
@@ -115,7 +191,21 @@ class AISummarizer:
                     )
                     
                     if response.status_code == HTTPStatus.OK:
-                        personal_summary = response.output.text.strip()
+                        raw_output = response.output.text.strip()
+                        logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
+                        logger.info(f"AI原始输出预览: {raw_output[:300]}...")
+                        
+                        # 尝试解析JSON
+                        json_data = self._extract_json_from_text(raw_output)
+                        if json_data:
+                            logger.info("✅ 成功解析个人日报JSON数据")
+                            # 转换为报告格式
+                            personal_summary = self._convert_personal_json_to_report(json_data, raw_output)
+                            logger.info(f"✅ JSON转换为报告格式完成，报告长度: {len(personal_summary)} 字符")
+                        else:
+                            logger.warning("⚠️ 无法解析JSON，使用原始输出")
+                            personal_summary = raw_output
+                        
                         logger.info("个人日报AI汇总完成")
                     else:
                         logger.error(f"个人日报AI调用失败: {response.status_code}")
@@ -169,7 +259,21 @@ class AISummarizer:
                     )
                     
                     if response.status_code == HTTPStatus.OK:
-                        summary = response.output.text.strip()
+                        raw_output = response.output.text.strip()
+                        logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
+                        logger.info(f"AI原始输出预览: {raw_output[:300]}...")
+                        
+                        # 尝试解析JSON
+                        json_data = self._extract_json_from_text(raw_output)
+                        if json_data:
+                            logger.info("✅ 成功解析JSON数据")
+                            # 转换为报告格式
+                            summary = self._convert_json_to_report(json_data, raw_output)
+                            logger.info(f"✅ JSON转换为报告格式完成，报告长度: {len(summary)} 字符")
+                        else:
+                            logger.warning("⚠️ 无法解析JSON，使用原始输出")
+                            summary = raw_output
+                        
                         individual_summaries.append({
                             'from': report['from'],
                             'username': report['from'].split('@')[0],
@@ -211,31 +315,104 @@ class AISummarizer:
             return self.create_simple_team_summary(team_reports)
     
     def create_single_team_report_prompt(self, report: Dict) -> str:
-        """为单个团队成员日报创建AI提示词"""
-        prompt = f"""
-请对以下日报内容进行简洁的结构化总结：
+        """为单个团队成员日报创建AI提示词（使用新的结构化分析提示词）"""
+        # 系统提示词
+        system_prompt = """你是一名资深项目管理分析助手（AI PM Analyst），擅长从项目经理的每日汇报中，
+抽取结构化事实、判断项目态势、识别人员负载与潜在风险。
 
+你的目标不是复述日报内容，而是：
+- 还原项目真实进展状态
+- 识别隐含的人力占用结构
+- 判断项目是否存在延期、风险或假推进信号
+- 给出偏保守、可解释的分析结论
+
+如果信息不足，请明确标注"不确定"，不要自行脑补。"""
+        
+        # 用户提示词
+        user_prompt = f"""以下是一名项目经理的项目日报，内容采用固定输入模式：
+
+【项目】：<项目名称>
+
+1. 今天项目发生了什么关键变化？
+2. 今天主要消耗人力在什么事情上？
+3. 有什么让我不安心的地方？
+4. 明天如果一切顺利，项目应该到什么状态？
+
+日报内容：
 {report['body']}
 
-请严格按照以下格式输出：
+请你完成以下分析任务，并严格按 JSON 结构输出。
 
-**项目进展：**
-- 项目1：简洁描述进展情况
-- 项目2：简洁描述进展情况
-- 项目3：简洁描述进展情况
+【分析任务】
 
-**遇到问题/风险：**
-- 问题1：简洁描述风险点
-- 问题2：简洁描述风险点
+一、事实抽取（不做判断）
+- 当前项目阶段（需求 / 设计 / 开发 / 联调 / 测试 / 验收 / 不确定）
+- 今日关键事件列表（推进 / 卡点 / 决策 / 客户反馈）
+- 明确提及的人员及其角色（如：研发 / 产品 / 测试 / PM）
+- 每个角色今天主要投入的工作类型
 
-要求：
-- 每个要点控制在25字以内
-- 直接列出项目名称和关键进展，去掉多余描述
-- 如果某部分无内容，写"无"
-- 严禁在输出中包含任何人名、邮箱或标识符号
-- 输出内容不要包含发件人信息
-- 只输出项目进展和风险两个部分
-"""
+二、人力占用与饱和度推断（基于内容信号，而非精确工时）
+- 对每个被提及的角色，判断其当前占用状态：
+  - 高负载（持续核心产出 / 被多个事项牵引）
+  - 中等负载
+  - 低负载 / 等待中
+- 判断是否存在角色缺位（某阶段本应出现但未出现的角色）
+- 判断是否存在单点风险（关键事项集中在少数人）
+
+三、项目态势判断
+- 项目整体健康度：green / yellow / red / unknown
+- 是否存在以下信号（是 / 否 / 不确定）：
+  - 假推进（人很忙但交付未逼近）
+  - 隐性延期风险
+  - 需求或决策不稳定
+  - 外部依赖阻塞（客户 / 第三方）
+- 当前最主要的风险描述（一句话）
+
+四、短期预期一致性检查
+- "明天如果一切顺利的状态"是否合理？
+- 是否存在明显乐观偏差或前置条件未满足？
+
+【输出要求】
+
+- 仅输出 JSON，不要输出解释性文字
+- 所有判断必须能从原文找到依据
+- 若无法判断，请使用 "unknown" 或 "insufficient_information"
+- JSON 格式示例：
+{{
+  "project_stage": "开发",
+  "key_events": ["推进：完成了XX功能开发", "卡点：等待第三方接口"],
+  "personnel": {{
+    "研发": {{
+      "work_type": "功能开发",
+      "load_status": "高负载"
+    }},
+    "测试": {{
+      "work_type": "等待中",
+      "load_status": "低负载"
+    }}
+  }},
+  "role_gaps": ["缺少产品角色参与"],
+  "single_point_risk": false,
+  "health_status": "yellow",
+  "risk_signals": {{
+    "fake_progress": false,
+    "delay_risk": true,
+    "requirement_unstable": false,
+    "external_block": true
+  }},
+  "main_risk": "等待第三方接口可能导致延期",
+  "tomorrow_expectation_check": {{
+    "reasonable": false,
+    "optimistic_bias": true,
+    "missing_prerequisites": ["第三方接口未就绪"]
+  }}
+}}"""
+        
+        # 组合系统提示词和用户提示词
+        prompt = f"""{system_prompt}
+
+{user_prompt}"""
+        
         return prompt
     
     def integrate_team_summaries(self, individual_summaries: List[Dict]) -> str:
@@ -278,31 +455,34 @@ class AISummarizer:
         # 构建所有个人汇总的文本
         summaries_text = ""
         for i, summary in enumerate(individual_summaries, 1):
-            summaries_text += f"\n=== {summary['username']} 的工作汇总 ===\n"
+            summaries_text += f"\n=== {summary['username']} 的项目分析报告 ===\n"
             summaries_text += summary['summary'] + "\n"
         
         prompt = f"""
-请对以下团队成员的工作汇总进行整体整合，生成一份专业的团队工作总结：
+你是一名资深项目管理分析助手，需要对多个团队成员的项目分析报告进行整体整合。
+
+以下是团队成员的项目分析报告：
 
 {summaries_text}
 
 请按照以下格式输出整合后的团队工作总结：
 
-# 团队工作总结
+### 3. 团队项目进展
+（整合所有成员的项目进展，按项目维度重新组织，避免重复，突出关键进展）
 
-# 1. 项目进展
-（整合所有成员的项目进展，避免重复，突出关键进展）
-
-# 2. 项目风险
-（整合所有成员提到的风险和问题，去除重复内容）
+### 4. 团队项目风险
+（整合所有成员提到的风险和问题，按项目或风险类型分类，去除重复内容）
 
 整合要求：
 - 按项目或业务线重新组织内容，而不是简单按人员分组
 - 合并相关的项目进展，避免内容重复
 - 识别跨人员的协作项目，统一描述进展
+- 从各成员的分析报告中提取关键信息（项目阶段、关键事件、风险信号等）
 - 语言简洁专业，每个要点控制在30字以内
 - 使用统一的格式：- 项目名：具体进展描述
 - 如果某个分类下没有内容，写"无"
+- 重点关注健康度为 yellow 或 red 的项目
+- 汇总所有风险信号，突出需要管理层关注的问题
 """
         return prompt
     
@@ -405,6 +585,152 @@ class AISummarizer:
         text = re.sub(r'<[^@]*@[^>]*>', '', text)
         text = re.sub(r'<[^>]*:', '', text)
         return text.strip()
+    
+    def _extract_json_from_text(self, text: str) -> Optional[Dict]:
+        """从文本中提取JSON内容"""
+        try:
+            # 尝试直接解析整个文本
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # 如果失败，尝试提取JSON部分
+            # 查找第一个 { 和最后一个 }
+            start_idx = text.find('{')
+            end_idx = text.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = text[start_idx:end_idx + 1]
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError:
+                    pass
+            
+            # 尝试查找代码块中的JSON
+            json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
+            match = re.search(json_pattern, text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            
+            logger.warning("无法从AI输出中提取有效的JSON")
+            return None
+    
+    def _convert_personal_json_to_report(self, json_data: Dict, original_summary: str = "") -> str:
+        """将个人日报的JSON分析结果转换为可读的报告格式（使用与团队日报相同的结构）"""
+        try:
+            # 使用与团队日报相同的转换方法
+            report = self._convert_json_to_report(json_data, original_summary)
+            return report
+            
+        except Exception as e:
+            logger.error(f"转换个人日报JSON到报告格式时出错: {e}")
+            # 如果转换失败，返回原始摘要或简单格式
+            if original_summary:
+                return f"# 个人工作总结\n\n{original_summary}"
+            return "# 个人工作总结\n\n（JSON解析失败，使用原始内容）"
+    
+    def _convert_json_to_report(self, json_data: Dict, original_summary: str = "") -> str:
+        """将JSON分析结果转换为可读的报告格式"""
+        try:
+            report = "**项目分析报告：**\n\n"
+            
+            # 一、事实抽取
+            report += "**一、事实抽取**\n"
+            project_stage = json_data.get("project_stage", "unknown")
+            report += f"- 当前项目阶段：{project_stage}\n"
+            
+            key_events = json_data.get("key_events", [])
+            if key_events:
+                report += "- 今日关键事件：\n"
+                for event in key_events:
+                    report += f"  • {event}\n"
+            else:
+                report += "- 今日关键事件：无\n"
+            
+            personnel = json_data.get("personnel", {})
+            if personnel:
+                report += "- 人员投入情况：\n"
+                for role, info in personnel.items():
+                    if isinstance(info, dict):
+                        work_type = info.get("work_type", "未知")
+                        load_status = info.get("load_status", "未知")
+                        report += f"  • {role}：{work_type}（{load_status}）\n"
+            else:
+                report += "- 人员投入情况：无相关信息\n"
+            
+            # 二、人力占用与饱和度
+            report += "\n**二、人力占用分析**\n"
+            role_gaps = json_data.get("role_gaps", [])
+            if role_gaps:
+                report += "- 角色缺位：\n"
+                for gap in role_gaps:
+                    report += f"  • {gap}\n"
+            else:
+                report += "- 角色缺位：无\n"
+            
+            single_point_risk = json_data.get("single_point_risk", False)
+            report += f"- 单点风险：{'是' if single_point_risk else '否'}\n"
+            
+            # 三、项目态势判断
+            report += "\n**三、项目态势判断**\n"
+            health_status = json_data.get("health_status", "unknown")
+            status_map = {
+                "green": "🟢 健康",
+                "yellow": "🟡 需关注",
+                "red": "🔴 有风险",
+                "unknown": "❓ 不确定"
+            }
+            report += f"- 项目健康度：{status_map.get(health_status, health_status)}\n"
+            
+            risk_signals = json_data.get("risk_signals", {})
+            if risk_signals:
+                report += "- 风险信号：\n"
+                signal_map = {
+                    "fake_progress": "假推进",
+                    "delay_risk": "隐性延期风险",
+                    "requirement_unstable": "需求或决策不稳定",
+                    "external_block": "外部依赖阻塞"
+                }
+                for key, desc in signal_map.items():
+                    value = risk_signals.get(key, "不确定")
+                    if isinstance(value, bool):
+                        value = "是" if value else "否"
+                    report += f"  • {desc}：{value}\n"
+            
+            main_risk = json_data.get("main_risk", "")
+            if main_risk:
+                report += f"- 主要风险：{main_risk}\n"
+            else:
+                report += "- 主要风险：无\n"
+            
+            # 四、短期预期一致性检查
+            report += "\n**四、短期预期检查**\n"
+            expectation_check = json_data.get("tomorrow_expectation_check", {})
+            if expectation_check:
+                reasonable = expectation_check.get("reasonable", True)
+                report += f"- 预期合理性：{'合理' if reasonable else '存在偏差'}\n"
+                
+                optimistic_bias = expectation_check.get("optimistic_bias", False)
+                if optimistic_bias:
+                    report += "- 乐观偏差：是\n"
+                
+                missing_prerequisites = expectation_check.get("missing_prerequisites", [])
+                if missing_prerequisites:
+                    report += "- 缺失前置条件：\n"
+                    for pre in missing_prerequisites:
+                        report += f"  • {pre}\n"
+            else:
+                report += "- 预期合理性：无法判断\n"
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"转换JSON到报告格式时出错: {e}")
+            # 如果转换失败，返回原始摘要或简单格式
+            if original_summary:
+                return f"**项目分析报告：**\n\n{original_summary}"
+            return "**项目分析报告：**\n\n（JSON解析失败，使用原始内容）"
     
     def summarize_reports(self, reports: List[Dict]) -> str:
         """汇总日报 - 保持向后兼容"""

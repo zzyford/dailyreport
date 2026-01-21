@@ -2,9 +2,9 @@ schedule==1.2.0
 python-dotenv==1.0.0
 dashscope
 beautifulsoup4==4.12.2
-lxml==4.9.3
+lxml>=5.0.0
 python-dateutil==2.8.2
 loguru==0.7.2
-pydantic==2.5.0
+pydantic>=2.9.0
 flask==3.0.0
 requests==2.31.0 

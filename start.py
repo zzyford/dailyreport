@@ -18,18 +18,27 @@ def check_python_version():
     return True
 
 def check_dependencies():
+
     """检查依赖包"""
-    required_packages = [
-        'flask', 'apscheduler', 'dashscope', 
-        'pydantic', 'python-dotenv', 'beautifulsoup4'
-    ]
+    # 包名到模块名的映射
+    package_mapping = {
+        'flask': 'flask',
+        'schedule': 'schedule',  # 使用 schedule 而不是 apscheduler
+        'dashscope': 'dashscope',
+        'pydantic': 'pydantic',
+        'python-dotenv': 'dotenv',  # python-dotenv 的模块名是 dotenv
+        'beautifulsoup4': 'bs4',  # beautifulsoup4 的模块名是 bs4
+        'lxml': 'lxml',
+        'requests': 'requests',
+        'loguru': 'loguru',
+    }
     
     missing_packages = []
-    for package in required_packages:
+    for package_name, module_name in package_mapping.items():
         try:
-            __import__(package.replace('-', '_'))
+            __import__(module_name)
         except ImportError:
-            missing_packages.append(package)
+            missing_packages.append(package_name)
     
     if missing_packages:
         print("❌ 缺少依赖包：")
