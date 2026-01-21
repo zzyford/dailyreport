@@ -903,6 +903,353 @@ def get_content_for_date():
         logger.error(f"获取内容失败: {e}")
         return jsonify({'success': False, 'message': f'获取内容失败: {str(e)}'})
 
+@app.route('/dashboard')
+def dashboard():
+    """Dashboard 页面"""
+    return render_template('dashboard.html')
+
+@app.route('/api/dashboard/trends', methods=['GET'])
+def api_dashboard_trends():
+    """获取项目趋势数据"""
+    try:
+        days = int(request.args.get('days', 30))  # 默认30天
+        project_name = request.args.get('project', None)  # 可选的项目过滤
+        
+        conn = get_db_connection()
+        
+        # 计算日期范围
+        from datetime import datetime, timedelta
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        # 构建查询
+        query = '''
+            SELECT 
+                r.date,
+                p.project_name,
+                p.health_status,
+                p.project_stage,
+                p.single_point_risk,
+                p.main_risk,
+                p.key_events,
+                p.personnel,
+                p.risk_signals
+            FROM project_structured_data p
+            JOIN generated_reports r ON p.report_id = r.id
+            WHERE r.date >= ?
+        '''
+        params = [cutoff_date]
+        
+        if project_name:
+            query += ' AND p.project_name = ?'
+            params.append(project_name)
+        
+        query += ' ORDER BY r.date DESC, p.project_name'
+        
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+        
+        # 按日期和项目组织数据
+        trends = {}
+        for row in rows:
+            date_str = row['date']
+            project = row['project_name']
+            
+            if date_str not in trends:
+                trends[date_str] = {}
+            
+            trends[date_str][project] = {
+                'health_status': row['health_status'],
+                'project_stage': row['project_stage'],
+                'single_point_risk': bool(row['single_point_risk']),
+                'main_risk': row['main_risk'],
+                'key_events': json.loads(row['key_events']) if row['key_events'] else [],
+                'personnel': json.loads(row['personnel']) if row['personnel'] else {},
+                'risk_signals': json.loads(row['risk_signals']) if row['risk_signals'] else {}
+            }
+        
+        # 计算趋势变化
+        trend_analysis = calculate_trend_changes(trends)
+        
+        return jsonify({
+            'success': True,
+            'data': trends,
+            'analysis': trend_analysis
+        })
+        
+    except Exception as e:
+        logger.error(f"获取趋势数据失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/dashboard/risks', methods=['GET'])
+def api_dashboard_risks():
+    """获取风险分析数据"""
+    try:
+        days = int(request.args.get('days', 7))  # 默认7天
+        
+        conn = get_db_connection()
+        
+        from datetime import datetime, timedelta
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        rows = conn.execute('''
+            SELECT 
+                r.date,
+                p.project_name,
+                p.health_status,
+                p.main_risk,
+                p.single_point_risk,
+                p.risk_signals,
+                p.key_events
+            FROM project_structured_data p
+            JOIN generated_reports r ON p.report_id = r.id
+            WHERE r.date >= ?
+            ORDER BY r.date DESC, p.project_name
+        ''', (cutoff_date,)).fetchall()
+        conn.close()
+        
+        # 分析风险
+        risk_analysis = analyze_risks(rows)
+        
+        return jsonify({
+            'success': True,
+            'data': risk_analysis
+        })
+        
+    except Exception as e:
+        logger.error(f"获取风险数据失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/dashboard/resources', methods=['GET'])
+def api_dashboard_resources():
+    """获取人力资源分析数据"""
+    try:
+        days = int(request.args.get('days', 30))
+        
+        conn = get_db_connection()
+        
+        from datetime import datetime, timedelta
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        
+        rows = conn.execute('''
+            SELECT 
+                r.date,
+                p.project_name,
+                p.personnel,
+                p.role_gaps,
+                p.single_point_risk
+            FROM project_structured_data p
+            JOIN generated_reports r ON p.report_id = r.id
+            WHERE r.date >= ?
+            ORDER BY r.date DESC, p.project_name
+        ''', (cutoff_date,)).fetchall()
+        conn.close()
+        
+        # 分析人力资源
+        resource_analysis = analyze_resources(rows)
+        
+        return jsonify({
+            'success': True,
+            'data': resource_analysis
+        })
+        
+    except Exception as e:
+        logger.error(f"获取资源数据失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/api/dashboard/projects', methods=['GET'])
+def api_dashboard_projects():
+    """获取所有项目列表"""
+    try:
+        conn = get_db_connection()
+        
+        projects = conn.execute('''
+            SELECT DISTINCT project_name
+            FROM project_structured_data
+            ORDER BY project_name
+        ''').fetchall()
+        conn.close()
+        
+        project_list = [p['project_name'] for p in projects]
+        
+        return jsonify({
+            'success': True,
+            'projects': project_list
+        })
+        
+    except Exception as e:
+        logger.error(f"获取项目列表失败: {e}")
+        return jsonify({'success': False, 'message': str(e)})
+
+def calculate_trend_changes(trends: Dict) -> Dict:
+    """计算趋势变化"""
+    analysis = {
+        'health_degradations': [],  # 健康度下降
+        'stage_stagnations': [],    # 阶段停滞
+        'risk_accumulations': [],    # 风险积累
+        'project_changes': {}        # 项目变化
+    }
+    
+    # 按日期排序
+    sorted_dates = sorted(trends.keys())
+    
+    if len(sorted_dates) < 2:
+        return analysis
+    
+    # 对比相邻日期的变化
+    for i in range(1, len(sorted_dates)):
+        prev_date = sorted_dates[i-1]
+        curr_date = sorted_dates[i]
+        
+        prev_data = trends[prev_date]
+        curr_data = trends[curr_date]
+        
+        # 检查每个项目的变化
+        for project in set(list(prev_data.keys()) + list(curr_data.keys())):
+            if project not in prev_data or project not in curr_data:
+                continue
+            
+            prev = prev_data[project]
+            curr = curr_data[project]
+            
+            # 健康度下降检测
+            health_map = {'green': 3, 'yellow': 2, 'red': 1, 'unknown': 0}
+            prev_health = health_map.get(prev.get('health_status', 'unknown'), 0)
+            curr_health = health_map.get(curr.get('health_status', 'unknown'), 0)
+            
+            if curr_health < prev_health:
+                analysis['health_degradations'].append({
+                    'date': curr_date,
+                    'project': project,
+                    'from': prev.get('health_status'),
+                    'to': curr.get('health_status')
+                })
+            
+            # 阶段停滞检测（连续多天同一阶段）
+            if prev.get('project_stage') == curr.get('project_stage') and prev.get('project_stage') not in ['验收', '不确定']:
+                # 检查是否已经停滞
+                stagnation_days = 1
+                for j in range(i-1, -1, -1):
+                    check_date = sorted_dates[j]
+                    if project in trends[check_date]:
+                        if trends[check_date][project].get('project_stage') == curr.get('project_stage'):
+                            stagnation_days += 1
+                        else:
+                            break
+                
+                if stagnation_days >= 3:  # 连续3天以上
+                    analysis['stage_stagnations'].append({
+                        'date': curr_date,
+                        'project': project,
+                        'stage': curr.get('project_stage'),
+                        'days': stagnation_days
+                    })
+            
+            # 风险积累检测
+            prev_risks = prev.get('risk_signals', {})
+            curr_risks = curr.get('risk_signals', {})
+            
+            risk_count_prev = sum(1 for v in prev_risks.values() if v in [True, '是', 'true'])
+            risk_count_curr = sum(1 for v in curr_risks.values() if v in [True, '是', 'true'])
+            
+            if risk_count_curr > risk_count_prev:
+                analysis['risk_accumulations'].append({
+                    'date': curr_date,
+                    'project': project,
+                    'new_risks': risk_count_curr - risk_count_prev
+                })
+    
+    return analysis
+
+def analyze_risks(rows) -> Dict:
+    """分析风险数据"""
+    analysis = {
+        'high_risk_projects': [],
+        'risk_trends': {},
+        'emerging_risks': []
+    }
+    
+    # 按项目分组
+    project_risks = {}
+    for row in rows:
+        project = row['project_name']
+        if project not in project_risks:
+            project_risks[project] = []
+        
+        health = row['health_status']
+        main_risk = row['main_risk']
+        single_point = bool(row['single_point_risk'])
+        risk_signals = json.loads(row['risk_signals']) if row['risk_signals'] else {}
+        
+        project_risks[project].append({
+            'date': row['date'],
+            'health': health,
+            'main_risk': main_risk,
+            'single_point_risk': single_point,
+            'risk_signals': risk_signals
+        })
+    
+    # 识别高风险项目
+    for project, risks in project_risks.items():
+        recent_risks = risks[:3]  # 最近3条记录
+        red_count = sum(1 for r in recent_risks if r['health'] == 'red')
+        yellow_count = sum(1 for r in recent_risks if r['health'] == 'yellow')
+        
+        if red_count > 0 or (yellow_count >= 2):
+            analysis['high_risk_projects'].append({
+                'project': project,
+                'severity': 'high' if red_count > 0 else 'medium',
+                'recent_health': recent_risks[0]['health'] if recent_risks else 'unknown',
+                'main_risk': recent_risks[0]['main_risk'] if recent_risks else ''
+            })
+    
+    return analysis
+
+def analyze_resources(rows) -> Dict:
+    """分析人力资源数据"""
+    analysis = {
+        'role_distribution': {},
+        'role_gaps': [],
+        'single_point_risks': [],
+        'workload_trends': {}
+    }
+    
+    # 统计角色分布
+    for row in rows:
+        personnel = json.loads(row['personnel']) if row['personnel'] else {}
+        role_gaps = json.loads(row['role_gaps']) if row['role_gaps'] else []
+        
+        # 统计角色
+        for role, info in personnel.items():
+            if isinstance(info, dict):
+                if role not in analysis['role_distribution']:
+                    analysis['role_distribution'][role] = {
+                        'projects': set(),
+                        'total_count': 0
+                    }
+                analysis['role_distribution'][role]['projects'].add(row['project_name'])
+                analysis['role_distribution'][role]['total_count'] += 1
+        
+        # 记录角色缺位
+        if role_gaps:
+            analysis['role_gaps'].append({
+                'date': row['date'],
+                'project': row['project_name'],
+                'gaps': role_gaps
+            })
+        
+        # 单点风险
+        if row['single_point_risk']:
+            analysis['single_point_risks'].append({
+                'date': row['date'],
+                'project': row['project_name']
+            })
+    
+    # 转换集合为列表
+    for role in analysis['role_distribution']:
+        analysis['role_distribution'][role]['projects'] = list(analysis['role_distribution'][role]['projects'])
+    
+    return analysis
+
 @app.route('/send_history_email', methods=['POST'])
 def send_history_email():
     """发送历史日报邮件"""

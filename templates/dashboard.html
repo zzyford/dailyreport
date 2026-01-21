@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>项目态势感知 Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+        .dashboard-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .metric-card {
+            border-left: 4px solid #667eea;
+            transition: transform 0.2s;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .metric-card.danger {
+            border-left-color: #dc3545;
+        }
+        .metric-card.warning {
+            border-left-color: #ffc107;
+        }
+        .metric-card.success {
+            border-left-color: #28a745;
+        }
+        .trend-indicator {
+            font-size: 0.9rem;
+            margin-left: 0.5rem;
+        }
+        .trend-up {
+            color: #28a745;
+        }
+        .trend-down {
+            color: #dc3545;
+        }
+        .risk-badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+        .risk-high {
+            background-color: #dc3545;
+            color: white;
+        }
+        .risk-medium {
+            background-color: #ffc107;
+            color: #000;
+        }
+        .risk-low {
+            background-color: #28a745;
+            color: white;
+        }
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 2rem;
+        }
+        .alert-item {
+            border-left: 3px solid;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background-color: #f8f9fa;
+        }
+        .alert-item.alert-danger {
+            border-left-color: #dc3545;
+        }
+        .alert-item.alert-warning {
+            border-left-color: #ffc107;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-header">
+        <div class="container">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1 class="mb-0"><i class="bi bi-speedometer2"></i> 项目态势感知 Dashboard</h1>
+                    <p class="mb-0 mt-2 opacity-75">基于每日状态快照的趋势分析与风险识别</p>
+                </div>
+                <div class="col-md-4 text-end">
+                    <div class="btn-group" role="group">
+                        <button type="button" class="btn btn-light btn-sm" onclick="loadDashboard(7)">7天</button>
+                        <button type="button" class="btn btn-light btn-sm" onclick="loadDashboard(30)">30天</button>
+                        <button type="button" class="btn btn-light btn-sm" onclick="loadDashboard(90)">90天</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container-fluid">
+        <!-- 关键指标卡片 -->
+        <div class="row mb-4" id="metricsRow">
+            <div class="col-md-3">
+                <div class="card metric-card">
+                    <div class="card-body">
+                        <h6 class="text-muted mb-2">高风险项目</h6>
+                        <h2 class="mb-0" id="highRiskCount">-</h2>
+                        <small class="text-muted">需要立即关注</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card">
+                    <div class="card-body">
+                        <h6 class="text-muted mb-2">健康度下降</h6>
+                        <h2 class="mb-0" id="healthDegradationCount">-</h2>
+                        <small class="text-muted">最近变化</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card">
+                    <div class="card-body">
+                        <h6 class="text-muted mb-2">阶段停滞</h6>
+                        <h2 class="mb-0" id="stagnationCount">-</h2>
+                        <small class="text-muted">连续3天以上</small>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card metric-card">
+                    <div class="card-body">
+                        <h6 class="text-muted mb-2">风险积累</h6>
+                        <h2 class="mb-0" id="riskAccumulationCount">-</h2>
+                        <small class="text-muted">新增风险信号</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 趋势图表 -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-graph-up"></i> 项目健康度趋势</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="healthTrendChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 风险分析 -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> 高风险项目</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="highRiskProjects"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-arrow-down-circle"></i> 健康度下降</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="healthDegradations"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 阶段停滞和风险积累 -->
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-pause-circle"></i> 阶段停滞</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="stageStagnations"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-arrow-up-circle"></i> 风险积累</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="riskAccumulations"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 人力资源分析 -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="mb-0"><i class="bi bi-people"></i> 人力资源分析</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6">
+                                <h6>角色分布</h6>
+                                <div id="roleDistribution"></div>
+                            </div>
+                            <div class="col-md-6">
+                                <h6>角色缺位</h6>
+                                <div id="roleGaps"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let healthTrendChart = null;
+        let currentDays = 30;
+
+        // 加载 Dashboard
+        async function loadDashboard(days = 30) {
+            currentDays = days;
+            showLoading();
+            
+            try {
+                // 加载趋势数据
+                const trendsResponse = await fetch(`/api/dashboard/trends?days=${days}`);
+                const trendsData = await trendsResponse.json();
+                
+                if (trendsData.success) {
+                    updateMetrics(trendsData.analysis || {});
+                    if (trendsData.data && Object.keys(trendsData.data).length > 0) {
+                        updateHealthTrendChart(trendsData.data, trendsData.analysis || {});
+                    }
+                    updateAlerts(trendsData.analysis || {});
+                } else {
+                    console.error('趋势数据加载失败:', trendsData.message);
+                }
+                
+                // 加载风险数据
+                const risksResponse = await fetch(`/api/dashboard/risks?days=${Math.min(days, 7)}`);
+                const risksData = await risksResponse.json();
+                
+                if (risksData.success) {
+                    updateRiskProjects(risksData.data);
+                }
+                
+                // 加载资源数据
+                const resourcesResponse = await fetch(`/api/dashboard/resources?days=${days}`);
+                const resourcesData = await resourcesResponse.json();
+                
+                if (resourcesData.success) {
+                    updateResourceAnalysis(resourcesData.data);
+                }
+                
+            } catch (error) {
+                console.error('加载 Dashboard 失败:', error);
+                alert('加载数据失败，请稍后重试');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function showLoading() {
+            // 显示加载状态，但不删除现有元素
+            const elements = ['highRiskCount', 'healthDegradationCount', 'stagnationCount', 'riskAccumulationCount'];
+            elements.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = '...';
+                }
+            });
+        }
+
+        function hideLoading() {
+            // 加载完成，元素已在 updateMetrics 中更新
+        }
+
+        function updateMetrics(analysis) {
+            // 确保 analysis 对象存在
+            if (!analysis) {
+                analysis = {
+                    health_degradations: [],
+                    stage_stagnations: [],
+                    risk_accumulations: []
+                };
+            }
+            
+            // 安全地更新指标，如果元素不存在则跳过
+            const highRiskEl = document.getElementById('highRiskCount');
+            if (highRiskEl) {
+                highRiskEl.textContent = (analysis.health_degradations || []).length;
+            }
+            
+            const healthDegEl = document.getElementById('healthDegradationCount');
+            if (healthDegEl) {
+                healthDegEl.textContent = (analysis.health_degradations || []).length;
+            }
+            
+            const stagnationEl = document.getElementById('stagnationCount');
+            if (stagnationEl) {
+                stagnationEl.textContent = (analysis.stage_stagnations || []).length;
+            }
+            
+            const riskAccumEl = document.getElementById('riskAccumulationCount');
+            if (riskAccumEl) {
+                riskAccumEl.textContent = (analysis.risk_accumulations || []).length;
+            }
+        }
+
+        function updateHealthTrendChart(data, analysis) {
+            const chartElement = document.getElementById('healthTrendChart');
+            if (!chartElement) {
+                console.warn('图表元素不存在');
+                return;
+            }
+            
+            // 检查数据是否有效
+            if (!data || typeof data !== 'object' || Object.keys(data).length === 0) {
+                // 显示空数据提示
+                if (healthTrendChart) {
+                    healthTrendChart.destroy();
+                    healthTrendChart = null;
+                }
+                const chartContainer = chartElement.parentElement;
+                if (chartContainer) {
+                    chartContainer.innerHTML = '<p class="text-muted text-center p-4">暂无数据</p>';
+                }
+                return;
+            }
+            
+            // 按日期排序
+            const sortedDates = Object.keys(data).sort();
+            const projects = new Set();
+            
+            // 收集所有项目
+            sortedDates.forEach(date => {
+                if (data[date] && typeof data[date] === 'object') {
+                    Object.keys(data[date]).forEach(project => projects.add(project));
+                }
+            });
+            
+            const projectList = Array.from(projects);
+            
+            if (projectList.length === 0) {
+                // 没有项目数据
+                if (healthTrendChart) {
+                    healthTrendChart.destroy();
+                    healthTrendChart = null;
+                }
+                const chartContainer = chartElement.parentElement;
+                if (chartContainer) {
+                    chartContainer.innerHTML = '<p class="text-muted text-center p-4">暂无项目数据</p>';
+                }
+                return;
+            }
+            
+            // 准备图表数据
+            const healthMap = {'green': 3, 'yellow': 2, 'red': 1, 'unknown': 0};
+            const datasets = projectList.map((project, index) => {
+                const values = sortedDates.map(date => {
+                    const projectData = data[date] && data[date][project];
+                    if (!projectData) return null;
+                    return healthMap[projectData.health_status] || 0;
+                });
+                
+                return {
+                    label: project,
+                    data: values,
+                    borderColor: getColorForIndex(index),
+                    backgroundColor: getColorForIndex(index, 0.1),
+                    tension: 0.4,
+                    fill: false
+                };
+            });
+            
+            const ctx = chartElement.getContext('2d');
+            
+            if (healthTrendChart) {
+                healthTrendChart.destroy();
+            }
+            
+            healthTrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: sortedDates,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 3,
+                            ticks: {
+                                stepSize: 1,
+                                callback: function(value) {
+                                    const map = {3: 'Green', 2: 'Yellow', 1: 'Red', 0: 'Unknown'};
+                                    return map[value] || '';
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: projectList.length <= 10
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const value = context.parsed.y;
+                                    const map = {3: 'Green', 2: 'Yellow', 1: 'Red', 0: 'Unknown'};
+                                    return context.dataset.label + ': ' + (map[value] || 'Unknown');
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function getColorForIndex(index, alpha = 1) {
+            const colors = [
+                `rgba(102, 126, 234, ${alpha})`,
+                `rgba(220, 53, 69, ${alpha})`,
+                `rgba(255, 193, 7, ${alpha})`,
+                `rgba(40, 167, 69, ${alpha})`,
+                `rgba(23, 162, 184, ${alpha})`,
+                `rgba(108, 117, 125, ${alpha})`,
+                `rgba(255, 99, 132, ${alpha})`,
+                `rgba(54, 162, 235, ${alpha})`,
+                `rgba(255, 206, 86, ${alpha})`,
+                `rgba(75, 192, 192, ${alpha})`
+            ];
+            return colors[index % colors.length];
+        }
+
+        function updateAlerts(analysis) {
+            // 确保 analysis 对象存在
+            if (!analysis) {
+                analysis = {
+                    health_degradations: [],
+                    stage_stagnations: [],
+                    risk_accumulations: []
+                };
+            }
+            
+            // 更新健康度下降
+            const healthDegContainer = document.getElementById('healthDegradations');
+            if (healthDegContainer) {
+                const degradations = analysis.health_degradations || [];
+                if (degradations.length === 0) {
+                    healthDegContainer.innerHTML = '<p class="text-muted">暂无健康度下降的项目</p>';
+                } else {
+                    healthDegContainer.innerHTML = degradations.map(item => `
+                        <div class="alert-item alert-danger">
+                            <strong>${item.project || '未知项目'}</strong> (${item.date || ''})<br>
+                            <small>${item.from || ''} → ${item.to || ''}</small>
+                        </div>
+                    `).join('');
+                }
+            }
+            
+            // 更新阶段停滞
+            const stagnationContainer = document.getElementById('stageStagnations');
+            if (stagnationContainer) {
+                const stagnations = analysis.stage_stagnations || [];
+                if (stagnations.length === 0) {
+                    stagnationContainer.innerHTML = '<p class="text-muted">暂无阶段停滞的项目</p>';
+                } else {
+                    stagnationContainer.innerHTML = stagnations.map(item => `
+                        <div class="alert-item alert-warning">
+                            <strong>${item.project || '未知项目'}</strong> (${item.date || ''})<br>
+                            <small>阶段: ${item.stage || ''}，已停滞 ${item.days || 0} 天</small>
+                        </div>
+                    `).join('');
+                }
+            }
+            
+            // 更新风险积累
+            const riskAccumContainer = document.getElementById('riskAccumulations');
+            if (riskAccumContainer) {
+                const accumulations = analysis.risk_accumulations || [];
+                if (accumulations.length === 0) {
+                    riskAccumContainer.innerHTML = '<p class="text-muted">暂无风险积累的项目</p>';
+                } else {
+                    riskAccumContainer.innerHTML = accumulations.map(item => `
+                        <div class="alert-item alert-warning">
+                            <strong>${item.project || '未知项目'}</strong> (${item.date || ''})<br>
+                            <small>新增 ${item.new_risks || 0} 个风险信号</small>
+                        </div>
+                    `).join('');
+                }
+            }
+        }
+
+        function updateRiskProjects(data) {
+            const container = document.getElementById('highRiskProjects');
+            if (!container) return;
+            
+            if (!data || !data.high_risk_projects || data.high_risk_projects.length === 0) {
+                container.innerHTML = '<p class="text-muted">暂无高风险项目</p>';
+            } else {
+                container.innerHTML = data.high_risk_projects.map(item => `
+                    <div class="alert-item ${item.severity === 'high' ? 'alert-danger' : 'alert-warning'}">
+                        <strong>${item.project || '未知项目'}</strong>
+                        <span class="risk-badge risk-${item.severity || 'medium'} ms-2">${item.severity === 'high' ? '高风险' : '中风险'}</span><br>
+                        <small>健康度: ${item.recent_health || 'unknown'}</small><br>
+                        <small>${item.main_risk || '无主要风险描述'}</small>
+                    </div>
+                `).join('');
+            }
+        }
+
+        function updateResourceAnalysis(data) {
+            if (!data) {
+                data = {
+                    role_distribution: {},
+                    role_gaps: []
+                };
+            }
+            
+            // 更新角色分布
+            const roleDistContainer = document.getElementById('roleDistribution');
+            if (roleDistContainer) {
+                const roleDist = data.role_distribution || {};
+                if (Object.keys(roleDist).length === 0) {
+                    roleDistContainer.innerHTML = '<p class="text-muted">暂无角色分布数据</p>';
+                } else {
+                    roleDistContainer.innerHTML = Object.entries(roleDist).map(([role, info]) => `
+                        <div class="mb-2">
+                            <strong>${role || '未知角色'}</strong>: ${info.total_count || 0} 次提及
+                            <small class="text-muted">(${(info.projects || []).length} 个项目)</small>
+                        </div>
+                    `).join('');
+                }
+            }
+            
+            // 更新角色缺位
+            const roleGapsContainer = document.getElementById('roleGaps');
+            if (roleGapsContainer) {
+                const roleGaps = data.role_gaps || [];
+                if (roleGaps.length === 0) {
+                    roleGapsContainer.innerHTML = '<p class="text-muted">暂无角色缺位记录</p>';
+                } else {
+                    roleGapsContainer.innerHTML = roleGaps.slice(0, 10).map(item => `
+                        <div class="mb-2">
+                            <strong>${item.project || '未知项目'}</strong> (${item.date || ''})<br>
+                            <small>${(item.gaps || []).join(', ') || '无'}</small>
+                        </div>
+                    `).join('');
+                }
+            }
+        }
+
+        // 页面加载时自动加载 Dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            loadDashboard(30);
+            
+            // 每5分钟自动刷新
+            setInterval(() => {
+                loadDashboard(currentDays);
+            }, 5 * 60 * 1000);
+        });
+    </script>
+</body>
+</html>
