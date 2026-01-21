@@ -109,6 +109,15 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/marked.min.js') }}"></script>
+<script>
+// 配置 marked.js 以识别单个换行符
+if (typeof marked !== 'undefined') {
+    marked.setOptions({
+        breaks: true,  // 将单个换行符识别为 <br>
+        gfm: true      // 启用 GitHub Flavored Markdown
+    });
+}
+</script>
 
 <script>
 // 查看完整报告

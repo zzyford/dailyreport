@@ -44,7 +44,10 @@ class EmailFormatter:
         # 处理斜体
         content = re.sub(r'\*(.+?)\*', r'_\1_', content)
         
-        # 处理列表
+        # 处理列表 - 确保每个列表项都在单独一行
+        # 先处理已经缩进的列表项（两个空格 + •）
+        content = re.sub(r'^  \* (.+)$', r'  • \1', content, flags=re.MULTILINE)
+        # 处理标准 Markdown 列表
         content = re.sub(r'^- (.+)$', r'  • \1', content, flags=re.MULTILINE)
         content = re.sub(r'^\* (.+)$', r'  • \1', content, flags=re.MULTILINE)
         content = re.sub(r'^\+ (.+)$', r'  • \1', content, flags=re.MULTILINE)
@@ -75,6 +78,21 @@ class EmailFormatter:
             # 跳过空行
             if not line:
                 formatted_lines.append('')
+                continue
+            
+            # 处理同一行中包含多个圆点的情况（如：• 推进：xxx• 卡点：yyy）
+            # 将多个圆点拆分成多行
+            if '•' in line and line.count('•') > 1:
+                # 使用正则表达式按圆点分割
+                # 匹配：• 后面跟内容（直到下一个 • 或行尾）
+                pattern = r'•\s*([^•]+)'
+                matches = re.findall(pattern, line)
+                
+                # 处理每个匹配的项目
+                for match in matches:
+                    item = match.strip()
+                    if item:
+                        formatted_lines.append(f"  • {item}")
                 continue
             
             # 处理主标题（如：【2025-06-23 的日报】）
@@ -123,9 +141,17 @@ class EmailFormatter:
                 continue
             
             # 处理项目列表项（• 开头）
-            if line.startswith('• '):
+            if line.startswith('• ') or line.startswith('•'):
+                # 确保圆点前有换行（如果前面不是空行）
+                if formatted_lines and formatted_lines[-1].strip() and not formatted_lines[-1].startswith('  •'):
+                    # 前面有内容且不是列表项，添加空行
+                    formatted_lines.append('')
                 # 为项目列表项提供更清晰的缩进
-                formatted_lines.append(f"  {line}")
+                if line.startswith('• '):
+                    formatted_lines.append(f"  {line}")
+                else:
+                    # 处理 • 后面没有空格的情况
+                    formatted_lines.append(f"  {line.replace('•', '• ', 1)}")
                 continue
             
             # 处理原本就有缩进的列表项

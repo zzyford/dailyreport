@@ -26,6 +26,219 @@ class AISummarizer:
         
         return formatted_text
     
+    def create_unified_project_prompt(self, project_name: str, project_content: str) -> str:
+        """创建统一的项目分析提示词（不区分个人和团队）"""
+        system_prompt = """你是一名资深项目管理分析助手（AI PM Analyst），擅长从项目日报中，
+抽取结构化事实、判断项目态势、识别人员负载与潜在风险。
+
+你的目标不是复述日报内容，而是：
+- 还原项目真实进展状态
+- 识别隐含的人力占用结构
+- 判断项目是否存在延期、风险或假推进信号
+- 给出偏保守、可解释的分析结论
+
+如果信息不足，请明确标注"不确定"，不要自行脑补。"""
+        
+        user_prompt = f"""以下是一个项目的日报内容，可能来自多个团队成员：
+
+【项目】：{project_name}
+
+日报内容：
+{project_content}
+
+请你完成以下分析任务，并严格按 JSON 结构输出。
+
+【分析任务】
+
+一、事实抽取（不做判断）
+- 当前项目阶段（需求 / 设计 / 开发 / 联调 / 测试 / 验收 / 不确定）
+- 今日关键事件列表（推进 / 卡点 / 决策 / 客户反馈）
+- 明确提及的人员及其角色（如：研发 / 产品 / 测试 / PM）
+- 每个角色今天主要投入的工作类型
+
+二、人力占用与饱和度推断（基于内容信号，而非精确工时）
+- 对每个被提及的角色，判断其当前占用状态：
+  - 高负载（持续核心产出 / 被多个事项牵引）
+  - 中等负载
+  - 低负载 / 等待中
+- 判断是否存在角色缺位（某阶段本应出现但未出现的角色）
+- 判断是否存在单点风险（关键事项集中在少数人）
+
+三、项目态势判断
+- 项目整体健康度：green / yellow / red / unknown
+- 是否存在以下信号（是 / 否 / 不确定）：
+  - 假推进（人很忙但交付未逼近）
+  - 隐性延期风险
+  - 需求或决策不稳定
+  - 外部依赖阻塞（客户 / 第三方）
+- 当前最主要的风险描述（一句话）
+
+四、短期预期一致性检查
+- "明天如果一切顺利的状态"是否合理？
+- 是否存在明显乐观偏差或前置条件未满足？
+
+【输出要求】
+
+- 仅输出 JSON，不要输出解释性文字
+- 所有判断必须能从原文找到依据
+- 若无法判断，请使用 "unknown" 或 "insufficient_information"
+- JSON 格式示例：
+{{
+  "project_stage": "开发",
+  "key_events": ["推进：完成了XX功能开发", "卡点：等待第三方接口"],
+  "personnel": {{
+    "研发": {{
+      "work_type": "功能开发",
+      "load_status": "高负载"
+    }},
+    "测试": {{
+      "work_type": "等待中",
+      "load_status": "低负载"
+    }}
+  }},
+  "role_gaps": ["缺少产品角色参与"],
+  "single_point_risk": false,
+  "health_status": "yellow",
+  "risk_signals": {{
+    "fake_progress": false,
+    "delay_risk": true,
+    "requirement_unstable": false,
+    "external_block": true
+  }},
+  "main_risk": "等待第三方接口可能导致延期",
+  "tomorrow_expectation_check": {{
+    "reasonable": false,
+    "optimistic_bias": true,
+    "missing_prerequisites": ["第三方接口未就绪"]
+  }}
+}}"""
+        
+        prompt = f"""{system_prompt}
+
+{user_prompt}"""
+        
+        return prompt
+    
+    def _generate_unified_project_report(self, all_project_results: Dict) -> str:
+        """生成统一的项目汇总报告（按项目维度）"""
+        if not all_project_results:
+            return "今日暂无项目日报内容。"
+        
+        report = ""
+        
+        # 按项目生成报告
+        for project_name, project_result in all_project_results.items():
+            json_data = project_result.get('json_data')
+            
+            if json_data:
+                # 转换为报告格式
+                project_report = self._convert_single_project_json(project_name, json_data)
+                report += project_report + "\n\n"
+            else:
+                # 如果没有JSON数据，显示原始输出
+                raw_output = project_result.get('raw_output', '')
+                report += f"### 【{project_name}】\n\n"
+                report += f"（AI分析失败，原始输出：{raw_output[:200]}...）\n\n"
+        
+        # 生成项目汇总部分
+        report += self._generate_project_summary(all_project_results)
+        
+        return report
+    
+    def _generate_project_summary(self, all_project_results: Dict) -> str:
+        """生成项目汇总部分（按项目进展和风险分类）"""
+        summary = "### 3. 项目进展\n"
+        summary += "各项目进展情况如下：\n\n"
+        
+        # 收集所有项目的进展
+        project_progress = {}
+        project_risks = {}
+        
+        for project_name, project_result in all_project_results.items():
+            json_data = project_result.get('json_data')
+            if not json_data:
+                continue
+            
+            # 提取项目阶段和关键事件
+            project_stage = json_data.get('project_stage', 'unknown')
+            key_events = json_data.get('key_events', [])
+            
+            # 构建进展描述
+            progress_items = []
+            for event in key_events:
+                if isinstance(event, str):
+                    if event.startswith('推进：') or event.startswith('推进:'):
+                        progress_items.append(event.replace('推进：', '').replace('推进:', ''))
+            
+            if progress_items:
+                project_progress[project_name] = {
+                    'stage': project_stage,
+                    'events': progress_items
+                }
+            
+            # 提取风险
+            health_status = json_data.get('health_status', 'unknown')
+            main_risk = json_data.get('main_risk', '')
+            risk_signals = json_data.get('risk_signals', {})
+            role_gaps = json_data.get('role_gaps', [])
+            single_point_risk = json_data.get('single_point_risk', False)
+            
+            risk_items = []
+            if main_risk:
+                risk_items.append(main_risk)
+            if single_point_risk:
+                risk_items.append("存在单点风险")
+            if role_gaps:
+                risk_items.append(f"角色缺位：{', '.join(role_gaps)}")
+            if risk_signals:
+                for signal, value in risk_signals.items():
+                    if value in [True, '是', 'true']:
+                        signal_map = {
+                            'fake_progress': '假推进',
+                            'delay_risk': '隐性延期风险',
+                            'requirement_unstable': '需求或决策不稳定',
+                            'external_block': '外部依赖阻塞'
+                        }
+                        risk_items.append(signal_map.get(signal, signal))
+            
+            if risk_items or health_status in ['yellow', 'red']:
+                project_risks[project_name] = {
+                    'health': health_status,
+                    'risks': risk_items
+                }
+        
+        # 输出项目进展
+        if project_progress:
+            for project_name, progress in project_progress.items():
+                summary += f"- **{project_name}**: "
+                summary += f"阶段：{progress['stage']}；"
+                summary += "；".join(progress['events'][:3])  # 最多显示3个关键事件
+                summary += "\n"
+        else:
+            summary += "无显著进展\n"
+        
+        summary += "\n### 4. 项目风险\n"
+        summary += "需要关注的问题和风险：\n\n"
+        
+        # 输出项目风险
+        if project_risks:
+            for project_name, risk in project_risks.items():
+                summary += f"- **{project_name}**: "
+                if risk['health'] == 'red':
+                    summary += "【高风险】"
+                elif risk['health'] == 'yellow':
+                    summary += "【需关注】"
+                
+                if risk['risks']:
+                    summary += "；".join(risk['risks'][:3])  # 最多显示3个风险
+                else:
+                    summary += "无显著风险"
+                summary += "\n"
+        else:
+            summary += "无需要特别关注的风险。\n"
+        
+        return summary
+    
     def create_personal_summary_prompt(self, personal_content: str) -> str:
         """创建个人日报汇总提示词（使用与团队日报相同的结构化分析方式）"""
         # 系统提示词（与 create_single_team_report_prompt 相同）
@@ -174,99 +387,127 @@ Nicole: MyCoach 客户
         return result['report']
     
     def summarize_reports_separated_with_data(self, personal_content: str, team_reports: List[Dict]) -> Dict:
-        """分别处理个人日报和团队日报，并返回报告和项目数据"""
+        """统一按项目处理所有日报内容（不区分个人和团队），并返回报告和项目数据"""
         try:
-            logger.info(f"=== AI分离汇总处理开始 ===")
+            logger.info(f"=== AI统一项目汇总处理开始 ===")
             logger.info(f"个人内容长度: {len(personal_content)} 字符")
             logger.info(f"团队报告数量: {len(team_reports)}")
             
-            personal_summary = ""
-            team_summary = ""
+            # 统一收集所有项目内容
+            all_projects = {}  # {project_name: [content1, content2, ...]}
             project_data_list = []  # 存储项目数据
             
-            # 处理个人日报
+            # 1. 从个人内容中提取项目
             if personal_content.strip():
-                logger.info("=== 开始处理个人日报 ===")
+                logger.info("=== 从个人内容中提取项目 ===")
+                personal_projects = self._extract_projects_from_content(personal_content)
+                for project in personal_projects:
+                    project_name = project['name']
+                    if project_name not in all_projects:
+                        all_projects[project_name] = []
+                    all_projects[project_name].append({
+                        'content': project['content'],
+                        'source': 'personal'
+                    })
+                    logger.info(f"提取到个人项目: {project_name}")
+            
+            # 2. 从团队邮件中提取项目
+            if team_reports:
+                logger.info("=== 从团队邮件中提取项目 ===")
+                for report in team_reports:
+                    # 从邮件内容中提取项目
+                    team_projects = self._extract_projects_from_content(report['body'])
+                    for project in team_projects:
+                        project_name = project['name']
+                        if project_name not in all_projects:
+                            all_projects[project_name] = []
+                        all_projects[project_name].append({
+                            'content': project['content'],
+                            'source': f"team_{report['from']}"
+                        })
+                        logger.info(f"提取到团队项目: {project_name} (来自 {report['from']})")
+            
+            # 3. 如果没有提取到项目，将整个内容作为一个项目
+            if not all_projects:
+                logger.info("未提取到项目标记，将整个内容作为默认项目")
+                all_content = personal_content
+                if team_reports:
+                    team_content = "\n\n".join([f"【{r['from']}的日报】\n{r['body']}" for r in team_reports])
+                    all_content = f"{personal_content}\n\n{team_content}" if personal_content else team_content
                 
-                # 检测是否包含多个项目（通过【项目】标记）
-                projects = self._extract_projects_from_content(personal_content)
+                all_projects['默认项目'] = [{
+                    'content': all_content,
+                    'source': 'combined'
+                }]
+            
+            # 4. 按项目统一处理
+            logger.info(f"=== 开始处理 {len(all_projects)} 个项目 ===")
+            all_project_results = {}  # {project_name: {summary, json_data, ...}}
+            
+            for project_name, project_contents in all_projects.items():
+                logger.info(f"处理项目: {project_name} (包含 {len(project_contents)} 个来源)")
                 
-                if len(projects) > 1:
-                    # 多项目：分段处理，避免输出过长被截断
-                    logger.info(f"检测到 {len(projects)} 个项目，采用分段处理方式")
-                    result = self._process_personal_reports_by_project_with_data(projects)
-                    personal_summary = result['summary']
-                    project_data_list.extend(result['project_data'])
-                else:
-                    # 单项目：直接处理
-                    logger.info("单项目处理模式")
-                    project_name = projects[0]['name'] if projects else '默认项目'
-                    project_content = projects[0]['content'] if projects else personal_content
-                    
-                    personal_prompt = self.create_personal_summary_prompt(project_content)
-                    logger.info(f"个人日报提示词长度: {len(personal_prompt)} 字符")
-                    
-                    if self.config.app_id:
-                        logger.info("调用AI处理个人日报...")
-                        # Application.call 不支持 max_tokens 参数，需要在百炼控制台的应用设置中配置
+                # 合并同一项目的所有内容
+                merged_content = "\n\n".join([
+                    f"【来源：{pc['source']}】\n{pc['content']}"
+                    for pc in project_contents
+                ])
+                
+                # 使用统一的提示词处理项目
+                project_prompt = self.create_unified_project_prompt(project_name, merged_content)
+                
+                if self.config.app_id:
+                    try:
                         response = Application.call(
                             api_key=self.config.api_key,
                             app_id=self.config.app_id,
-                            prompt=personal_prompt,
+                            prompt=project_prompt,
                             temperature=0.1
                         )
                         
                         if response.status_code == HTTPStatus.OK:
                             raw_output = response.output.text.strip()
-                            logger.info(f"AI原始输出长度: {len(raw_output)} 字符")
-                            logger.info(f"AI原始输出预览1: {raw_output[:500]}...")
+                            logger.info(f"项目 {project_name} AI输出长度: {len(raw_output)} 字符")
                             
-                            # 检查输出是否完整（检查JSON是否闭合）
+                            # 检查输出是否完整
                             if not self._is_json_complete(raw_output):
-                                logger.warning("⚠️ 检测到输出可能被截断，尝试修复...")
+                                logger.warning(f"⚠️ 项目 {project_name} 的输出可能被截断")
                             
-                            # 尝试解析JSON
+                            # 解析JSON
                             json_data = self._extract_json_from_text(raw_output)
                             if json_data:
-                                logger.info("✅ 成功解析个人日报JSON数据")
-                                # 转换为报告格式
-                                personal_summary = self._convert_personal_json_to_report(json_data, raw_output)
-                                logger.info(f"✅ JSON转换为报告格式完成，报告长度: {len(personal_summary)} 字符")
-                                
                                 # 保存项目数据
                                 project_data_list.append({
                                     'project_name': project_name,
-                                    'raw_content': project_content,
+                                    'raw_content': merged_content,
                                     'json_data': json_data,
                                     'raw_output': raw_output
                                 })
+                                
+                                all_project_results[project_name] = {
+                                    'json_data': json_data,
+                                    'raw_output': raw_output
+                                }
+                                logger.info(f"✅ 项目 {project_name} 处理完成")
                             else:
-                                logger.warning("⚠️ 无法解析JSON，使用原始输出")
-                                personal_summary = raw_output
-                            
-                            logger.info("个人日报AI汇总完成")
+                                logger.warning(f"⚠️ 项目 {project_name} JSON解析失败")
+                                all_project_results[project_name] = {
+                                    'json_data': None,
+                                    'raw_output': raw_output
+                                }
                         else:
-                            error_msg = f"个人日报AI调用失败: {response.status_code}"
-                            if hasattr(response, 'message'):
-                                error_msg += f", 错误信息: {response.message}"
-                            logger.error(error_msg)
-                            # 如果是400错误，可能是参数问题，记录详细错误
-                            if response.status_code == 400:
-                                logger.error("提示：Application.call 不支持 max_tokens 参数，请在百炼控制台的应用设置中配置输出长度")
-                            personal_summary = self.create_simple_personal_summary(personal_content)
-                    else:
-                        personal_summary = self.create_simple_personal_summary(personal_content)
+                            logger.error(f"项目 {project_name} AI调用失败: {response.status_code}")
+                    except Exception as e:
+                        logger.error(f"处理项目 {project_name} 时出错: {e}")
+                else:
+                    logger.warning(f"未配置AI，跳过项目 {project_name}")
             
-            # 处理团队日报 - 分别处理每个人的日报
-            if team_reports:
-                logger.info("=== 开始分别处理团队日报 ===")
-                team_summary = self.process_team_reports_individually(team_reports)
+            # 5. 生成统一的项目汇总报告
+            final_report = self._generate_unified_project_report(all_project_results)
             
-            # 合并最终报告
-            final_report = self.combine_summaries(personal_summary, team_summary)
-            
-            logger.info("=== AI分离汇总处理完成 ===")
+            logger.info("=== AI统一项目汇总处理完成 ===")
             logger.info(f"最终报告长度: {len(final_report)} 字符")
+            logger.info(f"处理了 {len(project_data_list)} 个项目")
             
             return {
                 'report': final_report,
@@ -274,7 +515,7 @@ Nicole: MyCoach 客户
             }
             
         except Exception as e:
-            logger.error(f"AI分离汇总失败: {e}")
+            logger.error(f"AI统一项目汇总失败: {e}")
             import traceback
             logger.error(traceback.format_exc())
             # 返回简单的汇总作为备选
